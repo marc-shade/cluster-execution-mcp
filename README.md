@@ -24,8 +24,8 @@ User: "Run the test suite"
 Claude Code: Uses cluster_bash tool
   command: "pytest tests/"
 
-Result: Automatically routes to macbook-air (least loaded)
-  Executed on: macbook-air
+Result: Automatically routes to researcher (least loaded)
+  Executed on: researcher
   Success: true
   [test output]
 ```
@@ -48,7 +48,7 @@ Get real-time cluster health and load distribution.
 Explicitly route command to specific node.
 
 **Use cases**:
-- Linux-specific commands → `offload_to(node_id="macpro51")`
+- Linux-specific commands → `offload_to(node_id="builder")`
 - Architecture-specific builds
 - Node-specific testing
 - Manual load balancing
@@ -59,9 +59,9 @@ User: "Build the project on Linux"
 
 Claude Code: Uses offload_to tool
   command: "make build"
-  node_id: "macpro51"
+  node_id: "builder"
 
-Result: Executes on macpro51 regardless of load
+Result: Executes on builder regardless of load
 ```
 
 ### `parallel_execute`
@@ -79,9 +79,9 @@ Claude Code: Uses parallel_execute tool
   ]
 
 Result:
-  - test_auth.py → macpro51
-  - test_api.py → mac-studio
-  - test_db.py → macbook-air
+  - test_auth.py → builder
+  - test_api.py → orchestrator
+  - test_db.py → researcher
   All run simultaneously
 ```
 
@@ -94,7 +94,7 @@ Result:
   "mcpServers": {
     "cluster-execution": {
       "command": "python3",
-      "args": ["/home/marc/agentic-system/mcp-servers/cluster-execution-mcp/server.py"],
+      "args": ["${AGENTIC_SYSTEM_PATH}/mcp-servers/cluster-execution-mcp/server.py"],
       "env": {},
       "disabled": false
     }
@@ -124,7 +124,7 @@ User: "Run the test suite"
 
 User: "Build the project"
 → Claude Code uses cluster_bash
-→ Detects "build" pattern, offloads to macpro51
+→ Detects "build" pattern, offloads to builder
 → Returns build output
 
 User: "List files"
@@ -143,7 +143,7 @@ User: "Check cluster status before running tests"
 → Decides optimal routing
 
 User: "Build on Linux specifically"
-→ Claude Code uses offload_to with node_id="macpro51"
+→ Claude Code uses offload_to with node_id="builder"
 → Forces execution on Linux builder
 
 User: "Run these 5 tests in parallel"
@@ -221,10 +221,10 @@ Claude Code: cluster_bash tool
 Auto-routing:
   - Detects "pytest" pattern
   - Checks local load: 65% (high)
-  - Queries cluster: macbook-air at 15% (available)
-  - Routes to macbook-air
+  - Queries cluster: researcher at 15% (available)
+  - Routes to researcher
 
-Result: Runs on macbook-air, local CPU stays at 10%, takes 5 minutes
+Result: Runs on researcher, local CPU stays at 10%, takes 5 minutes
 ```
 
 ### Parallel Execution
@@ -241,11 +241,11 @@ Claude Code: parallel_execute tool
   ]
 
 Distribution:
-  - test_auth.py → macpro51 (Linux)
-  - test_api.py → mac-studio (macOS)
-  - test_db.py → macbook-air (macOS)
-  - test_models.py → macpro51 (Linux)
-  - test_views.py → mac-studio (macOS)
+  - test_auth.py → builder (Linux)
+  - test_api.py → orchestrator (macOS)
+  - test_db.py → researcher (macOS)
+  - test_models.py → builder (Linux)
+  - test_views.py → orchestrator (macOS)
 
 Result: All run simultaneously, complete in 1/5 the time
 ```
@@ -260,19 +260,19 @@ User: "Show me cluster status"
 Claude Code: cluster_status tool
 
 Output:
-  ✅ macpro51:
+  ✅ builder:
     CPU: 45.2%
     Memory: 18.3%
     Load: 3.21
     Status: healthy
 
-  ✅ mac-studio:
+  ✅ orchestrator:
     CPU: 22.1%
     Memory: 54.7%
     Load: 2.15
     Status: healthy
 
-  ✅ macbook-air:
+  ✅ researcher:
     CPU: 12.8%
     Memory: 38.2%
     Load: 1.03
@@ -287,27 +287,26 @@ Output:
 cat ~/.claude.json | jq '.mcpServers["cluster-execution"]'
 
 # Test server directly
-python3 /home/marc/agentic-system/mcp-servers/cluster-execution-mcp/server.py
+python3 $AGENTIC_SYSTEM_PATH/mcp-servers/cluster-execution-mcp/server.py
 ```
 
 **Commands not routing**:
 ```bash
 # Check cluster-deployment is accessible
-ls -la ~/agentic-system/cluster-deployment/
+ls -la $AGENTIC_SYSTEM_PATH/cluster-deployment/
 
 # Verify distributed_task_router.py exists
-python3 -c "import sys; sys.path.insert(0, '~/agentic-system/cluster-deployment'); from distributed_task_router import DistributedTaskRouter"
+python3 -c "import sys; sys.path.insert(0, '$AGENTIC_SYSTEM_PATH/cluster-deployment'); from distributed_task_router import DistributedTaskRouter"
 ```
 
 **Node unreachable**:
 ```bash
-# Test SSH connectivity
-ssh marc@192.168.1.176 hostname
-ssh marc@192.168.1.76 hostname
+# Test SSH connectivity (use hostnames from cluster config)
+ssh user@node-hostname hostname
 
 # Check if nodes are running self-X daemon
 systemctl --user status cluster-self-x.service  # Linux
-ssh marc@192.168.1.176 "launchctl list | grep cluster-self-x"  # macOS
+ssh user@node-hostname "launchctl list | grep cluster-self-x"  # macOS
 ```
 
 ## Advanced Usage
@@ -321,7 +320,7 @@ Claude Code: cluster_bash
   command: "make build-linux"
   requires_os: "linux"
 
-→ Forces execution on macpro51 (only Linux node)
+→ Forces execution on builder (Linux node)
 ```
 
 ```
@@ -329,7 +328,7 @@ Claude Code: cluster_bash
   command: "cargo build --target aarch64"
   requires_arch: "arm64"
 
-→ Routes to mac-studio or macbook-air (ARM64 nodes)
+→ Routes to available ARM64 node
 ```
 
 ### Disable Auto-routing
