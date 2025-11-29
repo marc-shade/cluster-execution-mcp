@@ -16,7 +16,7 @@ Tools:
 
 Usage in Claude Code sessions:
 - "Run tests" → Uses cluster_bash, auto-routes to least loaded node
-- "Build on Linux" → Uses offload_to with node="macpro51"
+- "Build on Linux" → Uses offload_to with node="builder"
 - "Check cluster status" → Uses cluster_status
 """
 
@@ -32,6 +32,24 @@ CLUSTER_DIR = Path(__file__).parent.parent.parent / "cluster-deployment"
 sys.path.insert(0, str(CLUSTER_DIR))
 
 from distributed_task_router import DistributedTaskRouter, CLUSTER_NODES
+
+
+def _get_cluster_node_ids() -> list:
+    """Load cluster node IDs from configuration."""
+    env_nodes = os.environ.get("CLUSTER_NODE_IDS")
+    if env_nodes:
+        try:
+            return json.loads(env_nodes)
+        except json.JSONDecodeError:
+            pass
+    # Fallback to CLUSTER_NODES keys if available
+    if CLUSTER_NODES:
+        return list(CLUSTER_NODES.keys())
+    # Generic fallback
+    return ["builder", "orchestrator", "researcher"]
+
+
+CLUSTER_NODE_IDS = _get_cluster_node_ids()
 from performance_optimizer import PerformanceOptimizer
 
 # MCP imports
@@ -335,15 +353,13 @@ Returns JSON with status for each node.""",
             description="""Explicitly route command to specific cluster node.
 
 Use when you need to:
-- Run Linux-specific commands → offload to macpro51
+- Run Linux-specific commands → offload to builder node
 - Test on specific architecture
 - Balance load manually
 - Debug node-specific issues
 
-Available nodes:
-- macpro51: Linux x86_64 builder (docker, podman, compilation)
-- mac-studio: macOS ARM64 orchestrator
-- macbook-air: macOS ARM64 researcher
+Available nodes are configured via CLUSTER_NODE_IDS environment variable.
+Typical roles: builder (compilation), orchestrator (coordination), researcher (analysis).
 
 Parameters:
 - command (required): Bash command to execute
@@ -360,7 +376,7 @@ Returns execution result from specified node.""",
                     "node_id": {
                         "type": "string",
                         "description": "Target node ID",
-                        "enum": ["macpro51", "mac-studio", "macbook-air"]
+                        "enum": CLUSTER_NODE_IDS
                     }
                 },
                 "required": ["command", "node_id"]
