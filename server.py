@@ -130,24 +130,43 @@ class ClusterExecutionServer:
                     status["nodes"][node_id] = {"reachable": False, "error": "Cannot resolve IP or SSH unreachable"}
                     continue
 
-                cmd = f"ssh -o ConnectTimeout=2 marc@{node_ip} 'python3 -c \"import psutil, os; print(psutil.cpu_percent()); print(psutil.virtual_memory().percent); print(os.getloadavg()[0])\"'"
+                # Try psutil first, fall back to native commands
+                psutil_cmd = "python3 -c \"import psutil, os; print(psutil.cpu_percent()); print(psutil.virtual_memory().percent); print(os.getloadavg()[0])\""
+                # macOS fallback: use top and vm_stat
+                macos_fallback = "top -l 1 | awk '/CPU usage/{gsub(/%/,\"\"); print 100-$7}' && vm_stat | awk '/Pages (free|active|inactive|speculative|wired)/{sum+=$NF}END{print int(sum*4096/1024/1024/1024*100/32)}' && sysctl -n vm.loadavg | awk '{print $2}'"
+                # Linux fallback
+                linux_fallback = "grep 'cpu ' /proc/stat | awk '{usage=100-($5*100/($2+$3+$4+$5+$6+$7+$8))} END {print usage}' && free | awk '/Mem:/{print $3/$2*100}' && cat /proc/loadavg | awk '{print $1}'"
+
+                node_os = node_info.get("os", "linux")
+                fallback_cmd = macos_fallback if node_os == "macos" else linux_fallback
+
+                # Try psutil first
+                cmd = f"ssh -o ConnectTimeout=2 marc@{node_ip} '{psutil_cmd}'"
                 result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+
+                # If psutil fails, try native fallback
+                if result.returncode != 0:
+                    cmd = f"ssh -o ConnectTimeout=2 marc@{node_ip} '{fallback_cmd}'"
+                    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=8)
 
                 if result.returncode == 0:
                     lines = result.stdout.strip().split('\n')
-                    cpu = float(lines[0])
-                    memory = float(lines[1])
-                    load = float(lines[2])
+                    try:
+                        cpu = float(lines[0]) if lines[0] else 0.0
+                        memory = float(lines[1]) if len(lines) > 1 and lines[1] else 0.0
+                        load = float(lines[2]) if len(lines) > 2 and lines[2] else 0.0
 
-                    status["nodes"][node_id] = {
-                        "cpu_percent": cpu,
-                        "memory_percent": memory,
-                        "load_1m": load,
-                        "status": "healthy" if cpu < 70 and memory < 80 else "overloaded",
-                        "reachable": True
-                    }
+                        status["nodes"][node_id] = {
+                            "cpu_percent": cpu,
+                            "memory_percent": memory,
+                            "load_1m": load,
+                            "status": "healthy" if cpu < 70 and memory < 80 else "overloaded",
+                            "reachable": True
+                        }
+                    except (ValueError, IndexError) as e:
+                        status["nodes"][node_id] = {"reachable": True, "error": f"Parse error: {e}", "raw": result.stdout[:100]}
                 else:
-                    status["nodes"][node_id] = {"reachable": False}
+                    status["nodes"][node_id] = {"reachable": False, "error": result.stderr[:100] if result.stderr else "Command failed"}
             except Exception as e:
                 status["nodes"][node_id] = {"reachable": False, "error": str(e)}
 
