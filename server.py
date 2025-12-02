@@ -135,29 +135,25 @@ class ClusterExecutionServer:
 
                 # Build remote command based on OS
                 if node_os == "macos":
-                    # macOS: simple commands that work reliably
-                    remote_cmd = """
-cpu=$(top -l 1 | grep 'CPU usage' | sed 's/.*: //' | sed 's/% user.*//')
-mem=$(vm_stat | perl -ne '/Pages (free|active|inactive|speculative|wired).*:[ ]+([0-9]+)/ && ($sum += $2); END { print int($sum * 4096 / 1024 / 1024 / 1024 * 100 / 32) }')
-load=$(sysctl -n vm.loadavg | cut -d' ' -f2)
-echo "$cpu"
-echo "$mem"
-echo "$load"
-"""
+                    # macOS: one-liner to avoid newline issues with subprocess
+                    remote_cmd = (
+                        "cpu=$(top -l 1 | grep 'CPU usage' | sed 's/CPU usage: //' | sed 's/% user.*//' | tr -d ' '); "
+                        "mem=$(vm_stat | perl -ne '/Pages (free|active|inactive|speculative|wired).*:[ ]+([0-9]+)/ && ($sum += $2); END { print int($sum * 4096 / 1024 / 1024 / 1024 * 100 / 32) }'); "
+                        "load=$(sysctl -n vm.loadavg | cut -d' ' -f2); "
+                        "echo $cpu; echo $mem; echo $load"
+                    )
                 else:
-                    # Linux: use /proc filesystem
-                    remote_cmd = """
-cpu=$(grep 'cpu ' /proc/stat | awk '{u=$2+$4; t=$2+$4+$5; if(t>0) print 100*u/t; else print 0}')
-mem=$(free | awk '/Mem:/{if($2>0) print $3/$2*100; else print 0}')
-load=$(cut -d' ' -f1 /proc/loadavg)
-echo "$cpu"
-echo "$mem"
-echo "$load"
-"""
+                    # Linux: one-liner using /proc filesystem
+                    remote_cmd = (
+                        "cpu=$(grep 'cpu ' /proc/stat | awk '{u=$2+$4; t=$2+$4+$5; if(t>0) print 100*u/t; else print 0}'); "
+                        "mem=$(free | awk '/Mem:/{if($2>0) print $3/$2*100; else print 0}'); "
+                        "load=$(cut -d' ' -f1 /proc/loadavg); "
+                        "echo $cpu; echo $mem; echo $load"
+                    )
 
-                # Execute via SSH without shell=True to avoid quoting issues
+                # Execute via SSH - pass the whole bash command as single string
                 ssh_cmd = ["ssh", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=no",
-                           f"marc@{node_ip}", "bash", "-c", remote_cmd.strip()]
+                           f"marc@{node_ip}", f"bash -c '{remote_cmd}'"]
                 result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
 
                 if result.returncode == 0:
