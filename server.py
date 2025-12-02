@@ -135,26 +135,66 @@ class ClusterExecutionServer:
 
                 # Build remote command based on OS
                 if node_os == "macos":
-                    # macOS: one-liner to avoid newline issues with subprocess
-                    remote_cmd = (
-                        "cpu=$(top -l 1 | grep 'CPU usage' | sed 's/CPU usage: //' | sed 's/% user.*//' | tr -d ' '); "
-                        "mem=$(vm_stat | perl -ne '/Pages (free|active|inactive|speculative|wired).*:[ ]+([0-9]+)/ && ($sum += $2); END { print int($sum * 4096 / 1024 / 1024 / 1024 * 100 / 32) }'); "
-                        "load=$(sysctl -n vm.loadavg | cut -d' ' -f2); "
-                        "echo $cpu; echo $mem; echo $load"
-                    )
+                    # macOS: Use simple python script for reliable metrics
+                    remote_cmd = '''python3 -c "
+import subprocess
+# CPU from top
+r = subprocess.run(['top', '-l', '1'], capture_output=True, text=True)
+for line in r.stdout.split(chr(10)):
+    if 'CPU usage' in line:
+        cpu = line.split()[2].replace('%', '')
+        break
+else:
+    cpu = '0'
+# Memory from vm_stat
+r = subprocess.run(['vm_stat'], capture_output=True, text=True)
+pages = 0
+for line in r.stdout.split(chr(10)):
+    for key in ['free', 'active', 'inactive', 'speculative', 'wired']:
+        if key in line.lower() and ':' in line:
+            try:
+                pages += int(line.split(':')[1].strip().rstrip('.'))
+            except: pass
+mem = int(pages * 4096 / 1024 / 1024 / 1024 * 100 / 32)
+# Load
+r = subprocess.run(['sysctl', '-n', 'vm.loadavg'], capture_output=True, text=True)
+load = r.stdout.split()[1] if r.stdout else '0'
+print(cpu)
+print(mem)
+print(load)
+"'''
                 else:
-                    # Linux: one-liner using /proc filesystem
-                    remote_cmd = (
-                        "cpu=$(grep 'cpu ' /proc/stat | awk '{u=$2+$4; t=$2+$4+$5; if(t>0) print 100*u/t; else print 0}'); "
-                        "mem=$(free | awk '/Mem:/{if($2>0) print $3/$2*100; else print 0}'); "
-                        "load=$(cut -d' ' -f1 /proc/loadavg); "
-                        "echo $cpu; echo $mem; echo $load"
-                    )
+                    # Linux: Use simple python for consistency
+                    remote_cmd = '''python3 -c "
+import subprocess
+# CPU from /proc/stat
+with open('/proc/stat') as f:
+    line = f.readline()
+    fields = line.split()
+    user, nice, system, idle = map(int, fields[1:5])
+    total = user + nice + system + idle
+    cpu = 100 * (user + system) / total if total > 0 else 0
+# Memory from free
+r = subprocess.run(['free'], capture_output=True, text=True)
+for line in r.stdout.split(chr(10)):
+    if line.startswith('Mem:'):
+        parts = line.split()
+        mem = 100 * int(parts[2]) / int(parts[1]) if int(parts[1]) > 0 else 0
+        break
+else:
+    mem = 0
+# Load
+with open('/proc/loadavg') as f:
+    load = f.read().split()[0]
+print(f'{cpu:.1f}')
+print(f'{mem:.1f}')
+print(load)
+"'''
 
-                # Execute via SSH - pass the whole bash command as single string
-                ssh_cmd = ["ssh", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=no",
-                           f"marc@{node_ip}", f"bash -c '{remote_cmd}'"]
-                result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
+                # Execute via SSH
+                ssh_cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
+                           f"marc@{node_ip}", remote_cmd.strip()]
+                result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15)
 
                 if result.returncode == 0:
                     lines = result.stdout.strip().split('\n')
