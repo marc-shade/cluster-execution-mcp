@@ -124,10 +124,10 @@ class ClusterExecutionServer:
                 continue
 
             try:
-                # Use dynamic IP resolution
-                node_ip = get_node_ip(node_id)
+                # Use dynamic IP resolution with SSH verification
+                node_ip = get_node_ip(node_id, verify_ssh=True)
                 if not node_ip:
-                    status["nodes"][node_id] = {"reachable": False, "error": "Cannot resolve IP"}
+                    status["nodes"][node_id] = {"reachable": False, "error": "Cannot resolve IP or SSH unreachable"}
                     continue
 
                 cmd = f"ssh -o ConnectTimeout=2 marc@{node_ip} 'python3 -c \"import psutil, os; print(psutil.cpu_percent()); print(psutil.virtual_memory().percent); print(os.getloadavg()[0])\"'"

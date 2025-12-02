@@ -171,12 +171,26 @@ def resolve_hostname(hostname: str) -> Optional[str]:
     return None
 
 
-def get_node_ip(node_id: str, is_local: bool = False) -> Optional[str]:
+def verify_ssh_connectivity(ip: str, timeout: int = 2) -> bool:
+    """Verify SSH port is reachable on an IP."""
+    try:
+        result = subprocess.run(
+            ["nc", "-z", "-w", str(timeout), ip, "22"],
+            capture_output=True,
+            timeout=timeout + 1
+        )
+        return result.returncode == 0
+    except:
+        return False
+
+
+def get_node_ip(node_id: str, is_local: bool = False, verify_ssh: bool = False) -> Optional[str]:
     """Get current IP for a node, using dynamic resolution.
 
     Args:
         node_id: The node identifier
         is_local: If True, this is the local node - use interface IP instead of hostname
+        verify_ssh: If True, verify SSH connectivity before returning IP
     """
     if node_id not in CLUSTER_NODES:
         return None
@@ -189,15 +203,29 @@ def get_node_ip(node_id: str, is_local: bool = False) -> Optional[str]:
 
     node = CLUSTER_NODES[node_id]
     hostname = node.get("hostname")
+    fallback_ip = node.get("ip")
 
     # Try dynamic resolution first
     if hostname:
         ip = resolve_hostname(hostname)
         if ip:
-            return ip
+            # Optionally verify SSH connectivity
+            if verify_ssh:
+                if verify_ssh_connectivity(ip):
+                    return ip
+                # If mDNS IP doesn't work, try fallback
+                if fallback_ip and fallback_ip != ip and verify_ssh_connectivity(fallback_ip):
+                    return fallback_ip
+            else:
+                return ip
 
     # Fallback to static IP (may be stale)
-    return node.get("ip")
+    if fallback_ip:
+        if verify_ssh and not verify_ssh_connectivity(fallback_ip):
+            return None
+        return fallback_ip
+
+    return None
 
 
 # Cluster node registry - hostnames are authoritative, IPs are fallback hints
