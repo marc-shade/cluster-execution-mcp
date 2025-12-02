@@ -130,24 +130,35 @@ class ClusterExecutionServer:
                     status["nodes"][node_id] = {"reachable": False, "error": "Cannot resolve IP or SSH unreachable"}
                     continue
 
-                # Try psutil first, fall back to native commands
-                psutil_cmd = "python3 -c \"import psutil, os; print(psutil.cpu_percent()); print(psutil.virtual_memory().percent); print(os.getloadavg()[0])\""
-                # macOS fallback: use top and vm_stat
-                macos_fallback = "top -l 1 | awk '/CPU usage/{gsub(/%/,\"\"); print 100-$7}' && vm_stat | awk '/Pages (free|active|inactive|speculative|wired)/{sum+=$NF}END{print int(sum*4096/1024/1024/1024*100/32)}' && sysctl -n vm.loadavg | awk '{print $2}'"
-                # Linux fallback
-                linux_fallback = "grep 'cpu ' /proc/stat | awk '{usage=100-($5*100/($2+$3+$4+$5+$6+$7+$8))} END {print usage}' && free | awk '/Mem:/{print $3/$2*100}' && cat /proc/loadavg | awk '{print $1}'"
-
+                # Use subprocess list form to avoid shell quoting issues
                 node_os = node_info.get("os", "linux")
-                fallback_cmd = macos_fallback if node_os == "macos" else linux_fallback
 
-                # Try psutil first
-                cmd = f"ssh -o ConnectTimeout=2 marc@{node_ip} '{psutil_cmd}'"
-                result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+                # Build remote command based on OS
+                if node_os == "macos":
+                    # macOS: simple commands that work reliably
+                    remote_cmd = """
+cpu=$(top -l 1 | grep 'CPU usage' | sed 's/.*: //' | sed 's/% user.*//')
+mem=$(vm_stat | perl -ne '/Pages (free|active|inactive|speculative|wired).*:[ ]+([0-9]+)/ && ($sum += $2); END { print int($sum * 4096 / 1024 / 1024 / 1024 * 100 / 32) }')
+load=$(sysctl -n vm.loadavg | cut -d' ' -f2)
+echo "$cpu"
+echo "$mem"
+echo "$load"
+"""
+                else:
+                    # Linux: use /proc filesystem
+                    remote_cmd = """
+cpu=$(grep 'cpu ' /proc/stat | awk '{u=$2+$4; t=$2+$4+$5; if(t>0) print 100*u/t; else print 0}')
+mem=$(free | awk '/Mem:/{if($2>0) print $3/$2*100; else print 0}')
+load=$(cut -d' ' -f1 /proc/loadavg)
+echo "$cpu"
+echo "$mem"
+echo "$load"
+"""
 
-                # If psutil fails, try native fallback
-                if result.returncode != 0:
-                    cmd = f"ssh -o ConnectTimeout=2 marc@{node_ip} '{fallback_cmd}'"
-                    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=8)
+                # Execute via SSH without shell=True to avoid quoting issues
+                ssh_cmd = ["ssh", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=no",
+                           f"marc@{node_ip}", "bash", "-c", remote_cmd.strip()]
+                result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
 
                 if result.returncode == 0:
                     lines = result.stdout.strip().split('\n')
