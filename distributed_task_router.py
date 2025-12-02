@@ -171,17 +171,32 @@ def resolve_hostname(hostname: str) -> Optional[str]:
     return None
 
 
-def verify_ssh_connectivity(ip: str, timeout: int = 2) -> bool:
-    """Verify SSH port is reachable on an IP."""
-    try:
-        result = subprocess.run(
-            ["nc", "-z", "-w", str(timeout), ip, "22"],
-            capture_output=True,
-            timeout=timeout + 1
-        )
-        return result.returncode == 0
-    except:
-        return False
+def verify_ssh_connectivity(ip: str, timeout: int = 3, retries: int = 2) -> bool:
+    """Verify SSH connection actually works (not just port open).
+
+    Uses actual SSH command execution because some IPs may have port 22 open
+    but SSH commands timeout (e.g., WiFi interface vs Ethernet on same host).
+
+    Includes retry logic for transient network issues.
+    """
+    for attempt in range(retries):
+        try:
+            # Actually test SSH command execution, not just port availability
+            # Note: Don't use BatchMode as SSH agent forwarding may be needed
+            result = subprocess.run(
+                ["ssh", "-o", f"ConnectTimeout={timeout}",
+                 "-o", "StrictHostKeyChecking=no", f"marc@{ip}", "exit"],
+                capture_output=True,
+                timeout=timeout + 2
+            )
+            if result.returncode == 0:
+                return True
+        except (subprocess.TimeoutExpired, Exception):
+            pass
+        # Brief pause before retry
+        if attempt < retries - 1:
+            time.sleep(0.5)
+    return False
 
 
 def get_node_ip(node_id: str, is_local: bool = False, verify_ssh: bool = False) -> Optional[str]:
@@ -191,6 +206,10 @@ def get_node_ip(node_id: str, is_local: bool = False, verify_ssh: bool = False) 
         node_id: The node identifier
         is_local: If True, this is the local node - use interface IP instead of hostname
         verify_ssh: If True, verify SSH connectivity before returning IP
+
+    Strategy:
+        When verify_ssh=True, prefer fallback/Ethernet IP over mDNS/WiFi for stability.
+        Multi-homed hosts often have flaky WiFi but stable Ethernet.
     """
     if node_id not in CLUSTER_NODES:
         return None
@@ -205,27 +224,26 @@ def get_node_ip(node_id: str, is_local: bool = False, verify_ssh: bool = False) 
     hostname = node.get("hostname")
     fallback_ip = node.get("ip")
 
-    # Try dynamic resolution first
+    # With SSH verification, prefer stable fallback IP (usually Ethernet)
+    # over mDNS-resolved IP (often WiFi, can be flaky)
+    if verify_ssh and fallback_ip:
+        if verify_ssh_connectivity(fallback_ip):
+            return fallback_ip
+        # Fallback failed, try mDNS-resolved IP
+        if hostname:
+            ip = resolve_hostname(hostname)
+            if ip and ip != fallback_ip and verify_ssh_connectivity(ip):
+                return ip
+        return None
+
+    # Without SSH verification, prefer dynamic resolution
     if hostname:
         ip = resolve_hostname(hostname)
         if ip:
-            # Optionally verify SSH connectivity
-            if verify_ssh:
-                if verify_ssh_connectivity(ip):
-                    return ip
-                # If mDNS IP doesn't work, try fallback
-                if fallback_ip and fallback_ip != ip and verify_ssh_connectivity(fallback_ip):
-                    return fallback_ip
-            else:
-                return ip
+            return ip
 
-    # Fallback to static IP (may be stale)
-    if fallback_ip:
-        if verify_ssh and not verify_ssh_connectivity(fallback_ip):
-            return None
-        return fallback_ip
-
-    return None
+    # Fallback to static IP
+    return fallback_ip
 
 
 # Cluster node registry - hostnames are authoritative, IPs are fallback hints
