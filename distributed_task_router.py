@@ -38,6 +38,27 @@ import sqlite3
 _ip_cache: Dict[str, tuple] = {}  # hostname -> (ip, timestamp)
 _IP_CACHE_TTL = 300  # 5 minutes
 
+def _is_valid_cluster_ip(ip: str) -> bool:
+    """Check if IP is valid for cluster communication (not loopback/docker/link-local)."""
+    if not ip:
+        return False
+    # Reject loopback
+    if ip.startswith("127."):
+        return False
+    # Reject Docker/container bridge IPs (192.0.2.65/12 = 172.16-31.x.x)
+    if ip.startswith("172."):
+        second_octet = int(ip.split('.')[1])
+        if 16 <= second_octet <= 31:
+            return False
+    # Reject link-local
+    if ip.startswith("169.254."):
+        return False
+    # Reject other internal ranges sometimes used by containers
+    if ip.startswith("10.") and ip.startswith("10.0."):  # podman default
+        return False
+    return True
+
+
 def resolve_hostname(hostname: str) -> Optional[str]:
     """
     Dynamically resolve hostname to IP using multiple methods.
@@ -57,7 +78,7 @@ def resolve_hostname(hostname: str) -> Optional[str]:
     # Method 1: Try socket.gethostbyname (works for DNS and some mDNS)
     try:
         ip = socket.gethostbyname(hostname)
-        if ip and not ip.startswith("127."):
+        if _is_valid_cluster_ip(ip):
             _ip_cache[hostname] = (ip, now)
             return ip
     except socket.gaierror:
