@@ -38,6 +38,39 @@ import sqlite3
 _ip_cache: Dict[str, tuple] = {}  # hostname -> (ip, timestamp)
 _IP_CACHE_TTL = 300  # 5 minutes
 
+def get_local_lan_ip() -> Optional[str]:
+    """Get this machine's actual LAN IP (not Docker/loopback)."""
+    # Method 1: Use ip route to find the IP used to reach the LAN gateway
+    try:
+        result = subprocess.run(
+            ["ip", "route", "get", "192.0.2.102"],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if result.returncode == 0:
+            # Parse: "192.0.2.102 via ... src 192.168.1.X ..."
+            match = re.search(r'src (\d+\.\d+\.\d+\.\d+)', result.stdout)
+            if match:
+                return match.group(1)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # Method 2: Connect to external address (doesn't send data, just determines route)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        # Basic validation (can't call _is_valid_cluster_ip due to ordering)
+        if ip and not ip.startswith("127.") and not ip.startswith("172."):
+            return ip
+    except:
+        pass
+
+    return None
+
+
 def _is_valid_cluster_ip(ip: str) -> bool:
     """Check if IP is valid for cluster communication (not loopback/docker/link-local)."""
     if not ip:
@@ -138,10 +171,21 @@ def resolve_hostname(hostname: str) -> Optional[str]:
     return None
 
 
-def get_node_ip(node_id: str) -> Optional[str]:
-    """Get current IP for a node, using dynamic resolution."""
+def get_node_ip(node_id: str, is_local: bool = False) -> Optional[str]:
+    """Get current IP for a node, using dynamic resolution.
+
+    Args:
+        node_id: The node identifier
+        is_local: If True, this is the local node - use interface IP instead of hostname
+    """
     if node_id not in CLUSTER_NODES:
         return None
+
+    # For local node, get the actual LAN interface IP (avoids Docker/mDNS issues)
+    if is_local:
+        local_ip = get_local_lan_ip()
+        if local_ip:
+            return local_ip
 
     node = CLUSTER_NODES[node_id]
     hostname = node.get("hostname")
