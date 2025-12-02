@@ -31,7 +31,7 @@ from typing import Optional, List, Dict
 CLUSTER_DIR = Path(__file__).parent.parent.parent / "cluster-deployment"
 sys.path.insert(0, str(CLUSTER_DIR))
 
-from distributed_task_router import DistributedTaskRouter, CLUSTER_NODES
+from distributed_task_router import DistributedTaskRouter, CLUSTER_NODES, get_node_ip
 
 
 def _get_cluster_node_ids() -> list:
@@ -124,7 +124,13 @@ class ClusterExecutionServer:
                 continue
 
             try:
-                cmd = f"ssh -o ConnectTimeout=2 {node_info['ip']} 'python3 -c \"import psutil, os; print(psutil.cpu_percent()); print(psutil.virtual_memory().percent); print(os.getloadavg()[0])\"'"
+                # Use dynamic IP resolution
+                node_ip = get_node_ip(node_id)
+                if not node_ip:
+                    status["nodes"][node_id] = {"reachable": False, "error": "Cannot resolve IP"}
+                    continue
+
+                cmd = f"ssh -o ConnectTimeout=2 marc@{node_ip} 'python3 -c \"import psutil, os; print(psutil.cpu_percent()); print(psutil.virtual_memory().percent); print(os.getloadavg()[0])\"'"
                 result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
 
                 if result.returncode == 0:
