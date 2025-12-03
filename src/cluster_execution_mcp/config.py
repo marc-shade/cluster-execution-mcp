@@ -49,8 +49,8 @@ class ClusterConfig:
     # Cache Settings
     ip_cache_ttl: int = field(default_factory=lambda: int(os.getenv("CLUSTER_IP_CACHE_TTL", "300")))
 
-    # Network
-    gateway_ip: str = field(default_factory=lambda: os.getenv("CLUSTER_GATEWAY", "192.0.2.102"))
+    # Network (defaults use RFC 5737 TEST-NET for documentation - set CLUSTER_* env vars for real network)
+    gateway_ip: str = field(default_factory=lambda: os.getenv("CLUSTER_GATEWAY", "192.0.2.1"))
     dns_server: str = field(default_factory=lambda: os.getenv("CLUSTER_DNS", "8.8.8.8"))
 
     # Paths
@@ -140,12 +140,13 @@ class ClusterNode:
         return True
 
 
-# Cluster topology - loaded from environment or defaults
+# Cluster topology - configure via CLUSTER_* environment variables
+# Default IPs use RFC 5737 TEST-NET addresses for documentation purposes
 CLUSTER_NODES: Dict[str, ClusterNode] = {
     "builder": ClusterNode(
         node_id="builder",
-        hostname=os.getenv("CLUSTER_MACPRO51_HOST", "builder.example.local"),
-        fallback_ip=os.getenv("CLUSTER_MACPRO51_IP", "192.0.2.237"),
+        hostname=os.getenv("CLUSTER_BUILDER_HOST", "builder.example.local"),
+        fallback_ip=os.getenv("CLUSTER_BUILDER_IP", "192.0.2.10"),
         os="linux",
         arch="x86_64",
         capabilities=["docker", "podman", "raid", "nvme", "compilation", "testing", "tpu"],
@@ -155,8 +156,8 @@ CLUSTER_NODES: Dict[str, ClusterNode] = {
     ),
     "orchestrator": ClusterNode(
         node_id="orchestrator",
-        hostname=os.getenv("CLUSTER_MACSTUDIO_HOST", "Marcs-orchestrator.example.local"),
-        fallback_ip=os.getenv("CLUSTER_MACSTUDIO_IP", "192.0.2.5"),
+        hostname=os.getenv("CLUSTER_ORCHESTRATOR_HOST", "orchestrator.example.local"),
+        fallback_ip=os.getenv("CLUSTER_ORCHESTRATOR_IP", "192.0.2.20"),
         os="macos",
         arch="arm64",
         capabilities=["orchestration", "coordination", "temporal", "mlx-gpu", "arduino"],
@@ -166,8 +167,8 @@ CLUSTER_NODES: Dict[str, ClusterNode] = {
     ),
     "researcher": ClusterNode(
         node_id="researcher",
-        hostname=os.getenv("CLUSTER_MACBOOKAIR_HOST", "Marcs-researcher.example.local"),
-        fallback_ip=os.getenv("CLUSTER_MACBOOKAIR_IP", "192.0.2.65"),
+        hostname=os.getenv("CLUSTER_RESEARCHER_HOST", "researcher.example.local"),
+        fallback_ip=os.getenv("CLUSTER_RESEARCHER_IP", "192.0.2.30"),
         os="macos",
         arch="arm64",
         capabilities=["research", "documentation", "analysis"],
@@ -178,7 +179,7 @@ CLUSTER_NODES: Dict[str, ClusterNode] = {
     "inference": ClusterNode(
         node_id="inference",
         hostname=os.getenv("CLUSTER_INFERENCE_HOST", "inference.example.local"),
-        fallback_ip=os.getenv("CLUSTER_INFERENCE_IP", "192.0.2.130"),
+        fallback_ip=os.getenv("CLUSTER_INFERENCE_IP", "192.0.2.40"),
         os="macos",
         arch="arm64",
         capabilities=["ollama", "inference", "model-serving", "llm-api"],

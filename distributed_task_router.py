@@ -321,32 +321,23 @@ class DistributedTaskRouter:
         """Detect which node we're running on"""
         hostname = socket.gethostname().lower()
 
-        # Check against known nodes
-        if "builder" in hostname:
-            return "builder"
-        elif "studio" in hostname:
-            return "orchestrator"
-        elif "mac" in hostname and os.path.exists("${HOME}"):
-            # Check if it's MacBook Air by IP
-            try:
-                result = subprocess.run(
-                    ["hostname", "-I"],
-                    capture_output=True,
-                    text=True,
-                    timeout=2
-                )
-                if "192.0.2.227" in result.stdout:
-                    return "researcher"
-            except:
-                pass
+        # Check against known node IDs
+        for node_id in ["builder", "orchestrator", "researcher", "inference"]:
+            if node_id in hostname:
+                return node_id
+
+        # Check if it's a macOS system
+        if os.path.exists("/Users"):
             return "orchestrator"  # Default macOS node
         else:
             return "builder"  # Default Linux node
 
     def _get_db_path(self) -> Path:
         """Get path to task queue database"""
-        if self.local_node_id == "builder":
-            base = Path("${HOME}/agentic-system")
+        # Use AGENTIC_SYSTEM_PATH or fall back to home directory
+        agentic_path = os.environ.get("AGENTIC_SYSTEM_PATH")
+        if agentic_path:
+            base = Path(agentic_path)
         else:
             base = Path.home() / "agentic-system"
 
