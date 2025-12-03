@@ -94,7 +94,7 @@ Result:
   "mcpServers": {
     "cluster-execution": {
       "command": "python3",
-      "args": ["${AGENTIC_SYSTEM_PATH}/mcp-servers/cluster-execution-mcp/server.py"],
+      "args": ["${HOME}/agentic-system/mcp-servers/cluster-execution-mcp/server.py"],
       "env": {},
       "disabled": false
     }
@@ -287,26 +287,27 @@ Output:
 cat ~/.claude.json | jq '.mcpServers["cluster-execution"]'
 
 # Test server directly
-python3 $AGENTIC_SYSTEM_PATH/mcp-servers/cluster-execution-mcp/server.py
+python3 ${HOME}/agentic-system/mcp-servers/cluster-execution-mcp/server.py
 ```
 
 **Commands not routing**:
 ```bash
 # Check cluster-deployment is accessible
-ls -la $AGENTIC_SYSTEM_PATH/cluster-deployment/
+ls -la ~/agentic-system/cluster-deployment/
 
 # Verify distributed_task_router.py exists
-python3 -c "import sys; sys.path.insert(0, '$AGENTIC_SYSTEM_PATH/cluster-deployment'); from distributed_task_router import DistributedTaskRouter"
+python3 -c "import sys; sys.path.insert(0, '~/agentic-system/cluster-deployment'); from distributed_task_router import DistributedTaskRouter"
 ```
 
 **Node unreachable**:
 ```bash
-# Test SSH connectivity (use hostnames from cluster config)
-ssh user@node-hostname hostname
+# Test SSH connectivity
+ssh marc@192.0.2.211 hostname
+ssh marc@192.0.2.227 hostname
 
 # Check if nodes are running self-X daemon
 systemctl --user status cluster-self-x.service  # Linux
-ssh user@node-hostname "launchctl list | grep cluster-self-x"  # macOS
+ssh marc@192.0.2.211 "launchctl list | grep cluster-self-x"  # macOS
 ```
 
 ## Advanced Usage
@@ -320,7 +321,7 @@ Claude Code: cluster_bash
   command: "make build-linux"
   requires_os: "linux"
 
-→ Forces execution on builder (Linux node)
+→ Forces execution on builder (only Linux node)
 ```
 
 ```
@@ -328,7 +329,7 @@ Claude Code: cluster_bash
   command: "cargo build --target aarch64"
   requires_arch: "arm64"
 
-→ Routes to available ARM64 node
+→ Routes to orchestrator or researcher (ARM64 nodes)
 ```
 
 ### Disable Auto-routing

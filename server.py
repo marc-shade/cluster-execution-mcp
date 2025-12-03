@@ -31,25 +31,7 @@ from typing import Optional, List, Dict
 CLUSTER_DIR = Path(__file__).parent.parent.parent / "cluster-deployment"
 sys.path.insert(0, str(CLUSTER_DIR))
 
-from distributed_task_router import DistributedTaskRouter, CLUSTER_NODES, get_node_ip
-
-
-def _get_cluster_node_ids() -> list:
-    """Load cluster node IDs from configuration."""
-    env_nodes = os.environ.get("CLUSTER_NODE_IDS")
-    if env_nodes:
-        try:
-            return json.loads(env_nodes)
-        except json.JSONDecodeError:
-            pass
-    # Fallback to CLUSTER_NODES keys if available
-    if CLUSTER_NODES:
-        return list(CLUSTER_NODES.keys())
-    # Generic fallback
-    return ["builder", "orchestrator", "researcher"]
-
-
-CLUSTER_NODE_IDS = _get_cluster_node_ids()
+from distributed_task_router import DistributedTaskRouter, CLUSTER_NODES
 from performance_optimizer import PerformanceOptimizer
 
 # MCP imports
@@ -124,96 +106,24 @@ class ClusterExecutionServer:
                 continue
 
             try:
-                # Use dynamic IP resolution with SSH verification
-                node_ip = get_node_ip(node_id, verify_ssh=True)
-                if not node_ip:
-                    status["nodes"][node_id] = {"reachable": False, "error": "Cannot resolve IP or SSH unreachable"}
-                    continue
-
-                # Use subprocess list form to avoid shell quoting issues
-                node_os = node_info.get("os", "linux")
-
-                # Build remote command based on OS
-                if node_os == "macos":
-                    # macOS: Use simple python script for reliable metrics
-                    remote_cmd = '''python3 -c "
-import subprocess
-# CPU from top
-r = subprocess.run(['top', '-l', '1'], capture_output=True, text=True)
-for line in r.stdout.split(chr(10)):
-    if 'CPU usage' in line:
-        cpu = line.split()[2].replace('%', '')
-        break
-else:
-    cpu = '0'
-# Memory from vm_stat
-r = subprocess.run(['vm_stat'], capture_output=True, text=True)
-pages = 0
-for line in r.stdout.split(chr(10)):
-    for key in ['free', 'active', 'inactive', 'speculative', 'wired']:
-        if key in line.lower() and ':' in line:
-            try:
-                pages += int(line.split(':')[1].strip().rstrip('.'))
-            except: pass
-mem = int(pages * 4096 / 1024 / 1024 / 1024 * 100 / 32)
-# Load
-r = subprocess.run(['sysctl', '-n', 'vm.loadavg'], capture_output=True, text=True)
-load = r.stdout.split()[1] if r.stdout else '0'
-print(cpu)
-print(mem)
-print(load)
-"'''
-                else:
-                    # Linux: Use simple python for consistency
-                    remote_cmd = '''python3 -c "
-import subprocess
-# CPU from /proc/stat
-with open('/proc/stat') as f:
-    line = f.readline()
-    fields = line.split()
-    user, nice, system, idle = map(int, fields[1:5])
-    total = user + nice + system + idle
-    cpu = 100 * (user + system) / total if total > 0 else 0
-# Memory from free
-r = subprocess.run(['free'], capture_output=True, text=True)
-for line in r.stdout.split(chr(10)):
-    if line.startswith('Mem:'):
-        parts = line.split()
-        mem = 100 * int(parts[2]) / int(parts[1]) if int(parts[1]) > 0 else 0
-        break
-else:
-    mem = 0
-# Load
-with open('/proc/loadavg') as f:
-    load = f.read().split()[0]
-print(f'{cpu:.1f}')
-print(f'{mem:.1f}')
-print(load)
-"'''
-
-                # Execute via SSH
-                ssh_cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
-                           f"marc@{node_ip}", remote_cmd.strip()]
-                result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15)
+                cmd = f"ssh -o ConnectTimeout=2 {node_info['ip']} 'python3 -c \"import psutil, os; print(psutil.cpu_percent()); print(psutil.virtual_memory().percent); print(os.getloadavg()[0])\"'"
+                result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
 
                 if result.returncode == 0:
                     lines = result.stdout.strip().split('\n')
-                    try:
-                        cpu = float(lines[0]) if lines[0] else 0.0
-                        memory = float(lines[1]) if len(lines) > 1 and lines[1] else 0.0
-                        load = float(lines[2]) if len(lines) > 2 and lines[2] else 0.0
+                    cpu = float(lines[0])
+                    memory = float(lines[1])
+                    load = float(lines[2])
 
-                        status["nodes"][node_id] = {
-                            "cpu_percent": cpu,
-                            "memory_percent": memory,
-                            "load_1m": load,
-                            "status": "healthy" if cpu < 70 and memory < 80 else "overloaded",
-                            "reachable": True
-                        }
-                    except (ValueError, IndexError) as e:
-                        status["nodes"][node_id] = {"reachable": True, "error": f"Parse error: {e}", "raw": result.stdout[:100]}
+                    status["nodes"][node_id] = {
+                        "cpu_percent": cpu,
+                        "memory_percent": memory,
+                        "load_1m": load,
+                        "status": "healthy" if cpu < 70 and memory < 80 else "overloaded",
+                        "reachable": True
+                    }
                 else:
-                    status["nodes"][node_id] = {"reachable": False, "error": result.stderr[:100] if result.stderr else "Command failed"}
+                    status["nodes"][node_id] = {"reachable": False}
             except Exception as e:
                 status["nodes"][node_id] = {"reachable": False, "error": str(e)}
 
@@ -425,13 +335,15 @@ Returns JSON with status for each node.""",
             description="""Explicitly route command to specific cluster node.
 
 Use when you need to:
-- Run Linux-specific commands → offload to builder node
+- Run Linux-specific commands → offload to builder
 - Test on specific architecture
 - Balance load manually
 - Debug node-specific issues
 
-Available nodes are configured via CLUSTER_NODE_IDS environment variable.
-Typical roles: builder (compilation), orchestrator (coordination), researcher (analysis).
+Available nodes:
+- builder: Linux x86_64 builder (docker, podman, compilation)
+- orchestrator: macOS ARM64 orchestrator
+- researcher: macOS ARM64 researcher
 
 Parameters:
 - command (required): Bash command to execute
@@ -448,7 +360,7 @@ Returns execution result from specified node.""",
                     "node_id": {
                         "type": "string",
                         "description": "Target node ID",
-                        "enum": CLUSTER_NODE_IDS
+                        "enum": ["builder", "orchestrator", "researcher"]
                     }
                 },
                 "required": ["command", "node_id"]
