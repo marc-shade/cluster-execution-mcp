@@ -517,7 +517,12 @@ class DistributedTaskRouter:
                     text=True,
                     timeout=300
                 )
-                output = result.stdout
+                # Store result as JSON with stdout, stderr, return_code
+                result_json = json.dumps({
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "return_code": result.returncode
+                })
                 error = result.stderr if result.returncode != 0 else None
             elif task.script:
                 # Write script to temp file and execute
@@ -533,11 +538,20 @@ class DistributedTaskRouter:
                     text=True,
                     timeout=300
                 )
-                output = result.stdout
+                # Store result as JSON with stdout, stderr, return_code
+                result_json = json.dumps({
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "return_code": result.returncode
+                })
                 error = result.stderr if result.returncode != 0 else None
                 os.unlink(script_path)
             else:
-                output = "No command or script provided"
+                result_json = json.dumps({
+                    "stdout": "No command or script provided",
+                    "stderr": "",
+                    "return_code": -1
+                })
                 error = None
 
             # Update database
@@ -547,7 +561,7 @@ class DistributedTaskRouter:
                 UPDATE task_queue
                 SET status = 'completed', result = ?, error = ?, completed_at = ?
                 WHERE task_id = ?
-            """, (output, error, time.time(), task.task_id))
+            """, (result_json, error, time.time(), task.task_id))
             conn.commit()
             conn.close()
 
@@ -625,7 +639,12 @@ class DistributedTaskRouter:
                 timeout=300
             )
 
-            output = result.stdout
+            # Store result as JSON with stdout, stderr, return_code
+            result_json = json.dumps({
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "return_code": result.returncode
+            })
             error = result.stderr if result.returncode != 0 else None
 
             # Update database
@@ -635,7 +654,7 @@ class DistributedTaskRouter:
                 UPDATE task_queue
                 SET status = 'completed', result = ?, error = ?, completed_at = ?
                 WHERE task_id = ?
-            """, (output, error, time.time(), task.task_id))
+            """, (result_json, error, time.time(), task.task_id))
             conn.commit()
             conn.close()
 
