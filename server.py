@@ -417,7 +417,7 @@ Returns execution result from specified node.""",
                     "node_id": {
                         "type": "string",
                         "description": "Target node ID",
-                        "enum": ["builder", "orchestrator", "researcher"]
+                        "enum": ["builder", "orchestrator", "researcher", "inference"]
                     }
                 },
                 "required": ["command", "node_id"]
