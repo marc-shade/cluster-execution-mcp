@@ -667,7 +667,18 @@ class DistributedTaskRouter:
             return None
 
         columns = [desc[0] for desc in cursor.description]
-        return dict(zip(columns, row))
+        task_dict = dict(zip(columns, row))
+
+        # Parse JSON fields
+        json_fields = ['result', 'metadata', 'requires_capabilities']
+        for field in json_fields:
+            if field in task_dict and task_dict[field]:
+                try:
+                    task_dict[field] = json.loads(task_dict[field])
+                except (json.JSONDecodeError, TypeError):
+                    pass  # Keep as string if not valid JSON
+
+        return task_dict
 
     def wait_for_result(self, task_id: str, timeout: int = 300) -> Optional[Dict]:
         """Wait for task to complete and return result"""

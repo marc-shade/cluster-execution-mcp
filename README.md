@@ -281,8 +281,8 @@ python3 -c "from cluster_execution_mcp.server import main; print('OK')"
 **Node unreachable**:
 ```bash
 # Test SSH connectivity
-ssh marc@builder.example.local hostname
-ssh marc@Marcs-orchestrator.example.local hostname
+ssh user@example.com hostname
+ssh user@example.com hostname
 
 # Check with fallback IP
 ssh marc@192.0.2.237 hostname
