@@ -23,11 +23,15 @@ Usage:
 """
 
 import json
+import logging
 import os
 import re
 import socket
 import subprocess
 import time
+
+# Set up logging
+logger = logging.getLogger(__name__)
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional, Any, Tuple
 from pathlib import Path
