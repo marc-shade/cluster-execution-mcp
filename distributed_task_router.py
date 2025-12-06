@@ -322,19 +322,30 @@ class DistributedTaskRouter:
         self._init_database()
 
     def _detect_local_node(self) -> str:
-        """Detect which node we're running on"""
+        """Detect which node we're running on - returns CLUSTER_NODES key"""
         hostname = socket.gethostname().lower()
 
-        # Check against known node IDs
-        for node_id in ["builder", "orchestrator", "researcher", "inference"]:
-            if node_id in hostname:
+        # Map hostnames to CLUSTER_NODES keys
+        hostname_to_node = {
+            "builder": "builder",
+            "marcs-orchestrator": "orchestrator",
+            "orchestrator": "orchestrator",
+            "marcs-researcher": "researcher",
+            "researcher": "researcher",
+            "mac": "researcher",  # Common short name
+            "inference": "inference",
+        }
+
+        # Check for exact or partial hostname matches
+        for pattern, node_id in hostname_to_node.items():
+            if pattern in hostname:
                 return node_id
 
-        # Check if it's a macOS system
+        # Fallback: Linux = builder, macOS = orchestrator
         if os.path.exists("/Users"):
-            return "orchestrator"  # Default macOS node
+            return "orchestrator"
         else:
-            return "builder"  # Default Linux node
+            return "builder"
 
     def _get_db_path(self) -> Path:
         """Get path to task queue database"""
