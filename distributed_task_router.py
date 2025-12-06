@@ -405,8 +405,14 @@ class DistributedTaskRouter:
             submitted_at=time.time()
         )
 
-        # Find best node for this task
-        target_node = self._route_task(task)
+        # Check if a specific node was forced
+        force_node = task_def.get("force_node")
+        if force_node and force_node in CLUSTER_NODES:
+            target_node = force_node
+            logger.info(f"Task {task_id} forced to node: {force_node}")
+        else:
+            # Find best node for this task via auto-routing
+            target_node = self._route_task(task)
 
         # Store in database
         conn = sqlite3.connect(self.db_path)
