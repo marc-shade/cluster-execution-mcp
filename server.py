@@ -166,12 +166,40 @@ class ClusterExecutionServer:
             task_id = self.router.submit_task(task_def)
             result = self.router.wait_for_result(task_id, timeout=300)
 
+            # Handle None result (timeout) or unexpected format
+            if result is None:
+                return {
+                    "success": False,
+                    "error": "Task timed out waiting for result",
+                    "executed_on": "unknown",
+                    "auto_routed": True,
+                    "task_id": task_id
+                }
+
+            if not isinstance(result, dict):
+                return {
+                    "success": False,
+                    "error": f"Unexpected result format: {type(result).__name__}",
+                    "executed_on": "unknown",
+                    "auto_routed": True,
+                    "task_id": task_id
+                }
+
+            # Extract result data, handling nested result dict
+            result_data = result.get("result", {})
+            if isinstance(result_data, str):
+                try:
+                    import json
+                    result_data = json.loads(result_data)
+                except (json.JSONDecodeError, TypeError):
+                    result_data = {"stdout": result_data, "stderr": "", "return_code": 0}
+
             return {
-                "success": result["status"] == "completed",
+                "success": result.get("status") == "completed",
                 "executed_on": result.get("assigned_to", "unknown"),
-                "stdout": result.get("result", {}).get("stdout", ""),
-                "stderr": result.get("result", {}).get("stderr", ""),
-                "return_code": result.get("result", {}).get("return_code", -1),
+                "stdout": result_data.get("stdout", "") if isinstance(result_data, dict) else str(result_data),
+                "stderr": result_data.get("stderr", "") if isinstance(result_data, dict) else "",
+                "return_code": result_data.get("return_code", -1) if isinstance(result_data, dict) else -1,
                 "auto_routed": True,
                 "task_id": task_id
             }
