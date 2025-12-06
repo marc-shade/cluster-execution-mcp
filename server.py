@@ -27,9 +27,11 @@ import subprocess
 from pathlib import Path
 from typing import Optional, List, Dict
 
-# Add cluster-deployment to path
+# Add local src directory to path first, then cluster-deployment for fallbacks
+LOCAL_SRC = Path(__file__).parent
 CLUSTER_DIR = Path(__file__).parent.parent.parent / "cluster-deployment"
-sys.path.insert(0, str(CLUSTER_DIR))
+sys.path.insert(0, str(LOCAL_SRC))
+sys.path.insert(1, str(CLUSTER_DIR))
 
 from distributed_task_router import DistributedTaskRouter, CLUSTER_NODES
 from performance_optimizer import PerformanceOptimizer
