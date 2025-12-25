@@ -16,7 +16,7 @@ Tools:
 
 Usage in Claude Code sessions:
 - "Run tests" → Uses cluster_bash, auto-routes to least loaded node
-- "Build on Linux" → Uses offload_to with node="builder"
+- "Build on Linux" → Uses offload_to with node="macpro51"
 - "Check cluster status" → Uses cluster_status
 """
 
@@ -27,11 +27,9 @@ import subprocess
 from pathlib import Path
 from typing import Optional, List, Dict
 
-# Add local src directory to path first, then cluster-deployment for fallbacks
-LOCAL_SRC = Path(__file__).parent
+# Add cluster-deployment to path
 CLUSTER_DIR = Path(__file__).parent.parent.parent / "cluster-deployment"
-sys.path.insert(0, str(LOCAL_SRC))
-sys.path.insert(1, str(CLUSTER_DIR))
+sys.path.insert(0, str(CLUSTER_DIR))
 
 from distributed_task_router import DistributedTaskRouter, CLUSTER_NODES
 from performance_optimizer import PerformanceOptimizer
@@ -108,24 +106,46 @@ class ClusterExecutionServer:
                 continue
 
             try:
-                cmd = f"ssh -o ConnectTimeout=2 {node_info['ip']} 'python3 -c \"import psutil, os; print(psutil.cpu_percent()); print(psutil.virtual_memory().percent); print(os.getloadavg()[0])\"'"
-                result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+                import shlex
+                # Properly quote the Python script for safe SSH transport
+                metrics_script = "import psutil, os; print(psutil.cpu_percent()); print(psutil.virtual_memory().percent); print(os.getloadavg()[0])"
+                remote_cmd = f"python3 -c {shlex.quote(metrics_script)}"
+
+                # Use list args for security instead of shell=True
+                result = subprocess.run(
+                    [
+                        "ssh",
+                        "-o", "ConnectTimeout=3",
+                        "-o", "StrictHostKeyChecking=accept-new",
+                        "-o", "BatchMode=yes",
+                        f"marc@{node_info['ip']}",
+                        remote_cmd
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=8
+                )
 
                 if result.returncode == 0:
                     lines = result.stdout.strip().split('\n')
-                    cpu = float(lines[0])
-                    memory = float(lines[1])
-                    load = float(lines[2])
+                    if len(lines) >= 3:
+                        cpu = float(lines[0])
+                        memory = float(lines[1])
+                        load = float(lines[2])
 
-                    status["nodes"][node_id] = {
-                        "cpu_percent": cpu,
-                        "memory_percent": memory,
-                        "load_1m": load,
-                        "status": "healthy" if cpu < 70 and memory < 80 else "overloaded",
-                        "reachable": True
-                    }
+                        status["nodes"][node_id] = {
+                            "cpu_percent": round(cpu, 1),
+                            "memory_percent": round(memory, 1),
+                            "load_1m": round(load, 2),
+                            "status": "healthy" if cpu < 70 and memory < 80 else "overloaded",
+                            "reachable": True
+                        }
+                    else:
+                        status["nodes"][node_id] = {"reachable": False, "error": "Unexpected output"}
                 else:
-                    status["nodes"][node_id] = {"reachable": False}
+                    status["nodes"][node_id] = {"reachable": False, "error": result.stderr[:100] if result.stderr else "SSH failed"}
+            except subprocess.TimeoutExpired:
+                status["nodes"][node_id] = {"reachable": False, "error": "Timeout"}
             except Exception as e:
                 status["nodes"][node_id] = {"reachable": False, "error": str(e)}
 
@@ -168,40 +188,12 @@ class ClusterExecutionServer:
             task_id = self.router.submit_task(task_def)
             result = self.router.wait_for_result(task_id, timeout=300)
 
-            # Handle None result (timeout) or unexpected format
-            if result is None:
-                return {
-                    "success": False,
-                    "error": "Task timed out waiting for result",
-                    "executed_on": "unknown",
-                    "auto_routed": True,
-                    "task_id": task_id
-                }
-
-            if not isinstance(result, dict):
-                return {
-                    "success": False,
-                    "error": f"Unexpected result format: {type(result).__name__}",
-                    "executed_on": "unknown",
-                    "auto_routed": True,
-                    "task_id": task_id
-                }
-
-            # Extract result data, handling nested result dict
-            result_data = result.get("result", {})
-            if isinstance(result_data, str):
-                try:
-                    import json
-                    result_data = json.loads(result_data)
-                except (json.JSONDecodeError, TypeError):
-                    result_data = {"stdout": result_data, "stderr": "", "return_code": 0}
-
             return {
-                "success": result.get("status") == "completed",
+                "success": result["status"] == "completed",
                 "executed_on": result.get("assigned_to", "unknown"),
-                "stdout": result_data.get("stdout", "") if isinstance(result_data, dict) else str(result_data),
-                "stderr": result_data.get("stderr", "") if isinstance(result_data, dict) else "",
-                "return_code": result_data.get("return_code", -1) if isinstance(result_data, dict) else -1,
+                "stdout": result.get("result", "") or "",
+                "stderr": result.get("error", "") or "",
+                "return_code": 0 if result["status"] == "completed" else 1,
                 "auto_routed": True,
                 "task_id": task_id
             }
@@ -243,39 +235,12 @@ class ClusterExecutionServer:
         task_id = self.router.submit_task(task_def)
         result = self.router.wait_for_result(task_id, timeout=300)
 
-        # Handle None result (timeout) or unexpected format
-        if result is None:
-            return {
-                "success": False,
-                "error": "Task timed out waiting for result",
-                "executed_on": node_id,
-                "task_id": task_id
-            }
-
-        if not isinstance(result, dict):
-            return {
-                "success": False,
-                "error": f"Unexpected result format: {type(result).__name__}",
-                "executed_on": node_id,
-                "task_id": task_id
-            }
-
-        # Extract result data, handling nested result dict
-        result_data = result.get("result", {})
-        if isinstance(result_data, str):
-            # Result might be a JSON string
-            try:
-                import json
-                result_data = json.loads(result_data)
-            except (json.JSONDecodeError, TypeError):
-                result_data = {"stdout": result_data, "stderr": "", "return_code": 0}
-
         return {
-            "success": result.get("status") == "completed",
+            "success": result["status"] == "completed",
             "executed_on": result.get("assigned_to", node_id),
-            "stdout": result_data.get("stdout", "") if isinstance(result_data, dict) else str(result_data),
-            "stderr": result_data.get("stderr", "") if isinstance(result_data, dict) else "",
-            "return_code": result_data.get("return_code", -1) if isinstance(result_data, dict) else -1,
+            "stdout": result.get("result", "") or "",
+            "stderr": result.get("error", "") or "",
+            "return_code": 0 if result["status"] == "completed" else 1,
             "task_id": task_id
         }
 
@@ -300,8 +265,8 @@ class ClusterExecutionServer:
                 "command": cmd,
                 "success": result["status"] == "completed",
                 "executed_on": result.get("assigned_to", "unknown"),
-                "stdout": result.get("result", {}).get("stdout", ""),
-                "stderr": result.get("result", {}).get("stderr", ""),
+                "stdout": result.get("result", "") or "",
+                "stderr": result.get("error", "") or "",
                 "task_id": task_id
             })
 
@@ -392,15 +357,15 @@ Returns JSON with status for each node.""",
             description="""Explicitly route command to specific cluster node.
 
 Use when you need to:
-- Run Linux-specific commands → offload to builder
+- Run Linux-specific commands → offload to macpro51
 - Test on specific architecture
 - Balance load manually
 - Debug node-specific issues
 
 Available nodes:
-- builder: Linux x86_64 builder (docker, podman, compilation)
-- orchestrator: macOS ARM64 orchestrator
-- researcher: macOS ARM64 researcher
+- macpro51: Linux x86_64 builder (docker, podman, compilation)
+- mac-studio: macOS ARM64 orchestrator
+- macbook-air: macOS ARM64 researcher
 
 Parameters:
 - command (required): Bash command to execute
@@ -417,7 +382,7 @@ Returns execution result from specified node.""",
                     "node_id": {
                         "type": "string",
                         "description": "Target node ID",
-                        "enum": ["builder", "orchestrator", "researcher", "inference"]
+                        "enum": ["macpro51", "mac-studio", "macbook-air"]
                     }
                 },
                 "required": ["command", "node_id"]
