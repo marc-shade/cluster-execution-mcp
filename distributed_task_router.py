@@ -18,20 +18,16 @@ Usage:
         "source": "/path/to/code"
     })
 
-    # Task automatically routes to best node (likely builder for Linux builds)
+    # Task automatically routes to best node (likely macpro51 for Linux builds)
     result = router.wait_for_result(task_id)
 """
 
 import json
-import logging
 import os
 import re
 import socket
 import subprocess
 import time
-
-# Set up logging
-logger = logging.getLogger(__name__)
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional, Any, Tuple
 from pathlib import Path
@@ -47,13 +43,13 @@ def get_local_lan_ip() -> Optional[str]:
     # Method 1: Use ip route to find the IP used to reach the LAN gateway
     try:
         result = subprocess.run(
-            ["ip", "route", "get", "192.0.2.102"],
+            ["ip", "route", "get", "192.168.1.1"],
             capture_output=True,
             text=True,
             timeout=2
         )
         if result.returncode == 0:
-            # Parse: "192.0.2.102 via ... src 192.168.1.X ..."
+            # Parse: "192.168.1.1 via ... src 192.168.1.X ..."
             match = re.search(r'src (\d+\.\d+\.\d+\.\d+)', result.stdout)
             if match:
                 return match.group(1)
@@ -82,7 +78,7 @@ def _is_valid_cluster_ip(ip: str) -> bool:
     # Reject loopback
     if ip.startswith("127."):
         return False
-    # Reject Docker/container bridge IPs (192.0.2.65/12 = 172.16-31.x.x)
+    # Reject Docker/container bridge IPs (172.16.0.0/12 = 172.16-31.x.x)
     if ip.startswith("172."):
         second_octet = int(ip.split('.')[1])
         if 16 <= second_octet <= 31:
@@ -252,9 +248,9 @@ def get_node_ip(node_id: str, is_local: bool = False, verify_ssh: bool = False) 
 
 # Cluster node registry - hostnames are authoritative, IPs are fallback hints
 CLUSTER_NODES = {
-    "builder": {
-        "ip": "192.0.2.237",  # Fallback - prefer hostname resolution
-        "hostname": "builder.example.local",
+    "macpro51": {
+        "ip": "192.168.1.27",  # Fallback - confirmed working IP
+        "hostname": "macpro51.local",
         "os": "linux",
         "arch": "x86_64",
         "capabilities": ["docker", "podman", "raid", "nvme", "compilation", "testing"],
@@ -262,9 +258,9 @@ CLUSTER_NODES = {
         "max_tasks": 10,
         "priority": 3  # Lower = higher priority for offloading
     },
-    "orchestrator": {
-        "ip": "192.0.2.5",  # Fallback - prefer hostname resolution
-        "hostname": "Marcs-orchestrator.example.local",
+    "mac-studio": {
+        "ip": "192.168.1.16",  # Fallback - prefer hostname resolution
+        "hostname": "Marcs-Mac-Studio.local",
         "os": "macos",
         "arch": "arm64",
         "capabilities": ["orchestration", "coordination", "temporal", "mlx-gpu", "arduino"],
@@ -272,9 +268,9 @@ CLUSTER_NODES = {
         "max_tasks": 5,
         "priority": 1  # Keep this free - orchestrator
     },
-    "researcher": {
-        "ip": "192.0.2.65",  # Fallback - prefer hostname resolution
-        "hostname": "Marcs-researcher.example.local",
+    "macbook-air": {
+        "ip": "192.168.1.76",  # Fallback - confirmed working IP
+        "hostname": "Marcs-MacBook-Air.local",
         "os": "macos",
         "arch": "arm64",
         "capabilities": ["research", "documentation", "analysis"],
@@ -282,15 +278,35 @@ CLUSTER_NODES = {
         "max_tasks": 3,
         "priority": 2
     },
-    "inference": {
-        "ip": "192.0.2.130",  # Fallback - prefer hostname resolution
-        "hostname": "inference.example.local",
+    "completeu-server": {
+        "ip": "192.168.1.186",  # Fallback - prefer hostname resolution
+        "hostname": "completeu-server.local",
         "os": "macos",
         "arch": "arm64",
         "capabilities": ["ollama", "inference", "model-serving", "llm-api"],
         "specialties": ["ollama-inference", "model-serving", "api-endpoints"],
         "max_tasks": 8,
         "priority": 2
+    },
+    "macmini": {
+        "ip": "192.168.1.2",  # small-inference node
+        "hostname": "macmini.local",
+        "os": "macos",
+        "arch": "arm64",
+        "capabilities": ["inference", "lightweight-tasks", "edge-computing"],
+        "specialties": ["small-inference", "lightweight-models", "edge-tasks"],
+        "max_tasks": 4,
+        "priority": 2
+    },
+    "bpi-sentinel": {
+        "ip": "192.168.1.234",  # sentinel/watchdog node
+        "hostname": "bpi-sentinel.local",
+        "os": "linux",
+        "arch": "arm64",
+        "capabilities": ["monitoring", "alerting", "watchdog", "health-checks"],
+        "specialties": ["sentinel", "cluster-monitoring", "health-watchdog"],
+        "max_tasks": 2,
+        "priority": 4  # Low priority - dedicated to monitoring
     }
 }
 
@@ -325,27 +341,33 @@ class DistributedTaskRouter:
         """Detect which node we're running on - returns CLUSTER_NODES key"""
         hostname = socket.gethostname().lower()
 
-        # Map hostnames to CLUSTER_NODES keys
-        hostname_to_node = {
-            "builder": "builder",
-            "marcs-orchestrator": "orchestrator",
-            "orchestrator": "orchestrator",
-            "marcs-researcher": "researcher",
-            "researcher": "researcher",
-            "mac": "researcher",  # Common short name
-            "inference": "inference",
-        }
-
-        # Check for exact or partial hostname matches
-        for pattern, node_id in hostname_to_node.items():
-            if pattern in hostname:
+        # Check against CLUSTER_NODES keys (the actual node identifiers)
+        for node_id, node_info in CLUSTER_NODES.items():
+            # Direct match on node_id
+            if node_id in hostname:
+                return node_id
+            # Match on configured hostname (normalize for comparison)
+            config_host = node_info.get("hostname", "").lower()
+            # Handle variations: "Marcs-Mac-Studio.local" -> "macsstudio"
+            normalized_config = config_host.replace(".local", "").replace("-", "").replace("marcs", "")
+            normalized_host = hostname.replace("-", "").replace("marcs", "")
+            if normalized_config and normalized_config in normalized_host:
                 return node_id
 
-        # Fallback: Linux = builder, macOS = orchestrator
+        # Fallback: detect by IP address
+        try:
+            local_ip = socket.gethostbyname(socket.gethostname())
+            for node_id, node_info in CLUSTER_NODES.items():
+                if node_info.get("ip") == local_ip:
+                    return node_id
+        except:
+            pass
+
+        # Final fallback based on OS - use CLUSTER_NODES keys, not role names
         if os.path.exists("/Users"):
-            return "orchestrator"
+            return "mac-studio"  # Default macOS node (orchestrator)
         else:
-            return "builder"
+            return "macpro51"  # Default Linux node (builder)
 
     def _get_db_path(self) -> Path:
         """Get path to task queue database"""
@@ -420,14 +442,8 @@ class DistributedTaskRouter:
             submitted_at=time.time()
         )
 
-        # Check if a specific node was forced
-        force_node = task_def.get("force_node")
-        if force_node and force_node in CLUSTER_NODES:
-            target_node = force_node
-            logger.info(f"Task {task_id} forced to node: {force_node}")
-        else:
-            # Find best node for this task via auto-routing
-            target_node = self._route_task(task)
+        # Find best node for this task
+        target_node = self._route_task(task)
 
         # Store in database
         conn = sqlite3.connect(self.db_path)
@@ -538,12 +554,7 @@ class DistributedTaskRouter:
                     text=True,
                     timeout=300
                 )
-                # Store result as JSON with stdout, stderr, return_code
-                result_json = json.dumps({
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "return_code": result.returncode
-                })
+                output = result.stdout
                 error = result.stderr if result.returncode != 0 else None
             elif task.script:
                 # Write script to temp file and execute
@@ -559,20 +570,11 @@ class DistributedTaskRouter:
                     text=True,
                     timeout=300
                 )
-                # Store result as JSON with stdout, stderr, return_code
-                result_json = json.dumps({
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "return_code": result.returncode
-                })
+                output = result.stdout
                 error = result.stderr if result.returncode != 0 else None
                 os.unlink(script_path)
             else:
-                result_json = json.dumps({
-                    "stdout": "No command or script provided",
-                    "stderr": "",
-                    "return_code": -1
-                })
+                output = "No command or script provided"
                 error = None
 
             # Update database
@@ -582,7 +584,7 @@ class DistributedTaskRouter:
                 UPDATE task_queue
                 SET status = 'completed', result = ?, error = ?, completed_at = ?
                 WHERE task_id = ?
-            """, (result_json, error, time.time(), task.task_id))
+            """, (output, error, time.time(), task.task_id))
             conn.commit()
             conn.close()
 
@@ -660,12 +662,7 @@ class DistributedTaskRouter:
                 timeout=300
             )
 
-            # Store result as JSON with stdout, stderr, return_code
-            result_json = json.dumps({
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "return_code": result.returncode
-            })
+            output = result.stdout
             error = result.stderr if result.returncode != 0 else None
 
             # Update database
@@ -675,7 +672,7 @@ class DistributedTaskRouter:
                 UPDATE task_queue
                 SET status = 'completed', result = ?, error = ?, completed_at = ?
                 WHERE task_id = ?
-            """, (result_json, error, time.time(), task.task_id))
+            """, (output, error, time.time(), task.task_id))
             conn.commit()
             conn.close()
 
@@ -707,18 +704,7 @@ class DistributedTaskRouter:
             return None
 
         columns = [desc[0] for desc in cursor.description]
-        task_dict = dict(zip(columns, row))
-
-        # Parse JSON fields
-        json_fields = ['result', 'metadata', 'requires_capabilities']
-        for field in json_fields:
-            if field in task_dict and task_dict[field]:
-                try:
-                    task_dict[field] = json.loads(task_dict[field])
-                except (json.JSONDecodeError, TypeError):
-                    pass  # Keep as string if not valid JSON
-
-        return task_dict
+        return dict(zip(columns, row))
 
     def wait_for_result(self, task_id: str, timeout: int = 300) -> Optional[Dict]:
         """Wait for task to complete and return result"""

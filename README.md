@@ -1,20 +1,13 @@
 # Cluster Execution MCP Server
 
-[![MCP](https://img.shields.io/badge/MCP-Compatible-blue)](https://modelcontextprotocol.io)
-[![Python](https://img.shields.io/badge/Python-3.10+-green)](https://python.org)
-[![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
-[![Part of Agentic System](https://img.shields.io/badge/Part_of-Agentic_System-brightgreen)](https://github.com/marc-shade/agentic-system-oss)
-
-> **Cluster-aware command execution for distributed task routing across the AGI agentic cluster.**
-
-Part of the [Agentic System](https://github.com/marc-shade/agentic-system-oss) - a 24/7 autonomous AI framework with persistent memory.
+Cluster-aware command execution for distributed task routing across the AGI agentic cluster.
 
 **Version**: 0.2.0
 
 ## Features
 
 - **Automatic task routing**: Commands routed to optimal nodes based on load, capabilities, and requirements
-- **Multi-node support**: builder (Linux x86_64), orchestrator (macOS ARM64), researcher (macOS ARM64), inference node
+- **Multi-node support**: macpro51 (Linux x86_64), mac-studio (macOS ARM64), macbook-air (macOS ARM64), inference node
 - **Dynamic IP resolution**: mDNS, DNS, and fallback methods with caching
 - **Security hardened**: No shell injection, environment-based configuration, command validation
 - **SSH connectivity verification**: Retry logic with configurable timeouts
@@ -23,7 +16,7 @@ Part of the [Agentic System](https://github.com/marc-shade/agentic-system-oss) -
 ## Installation
 
 ```bash
-cd ${AGENTIC_SYSTEM_PATH:-/opt/agentic}/mcp-servers/cluster-execution-mcp
+cd /mnt/agentic-system/mcp-servers/cluster-execution-mcp
 pip install -e .
 
 # For development:
@@ -40,7 +33,7 @@ Add to `~/.claude.json`:
 {
   "mcpServers": {
     "cluster-execution": {
-      "command": "${AGENTIC_SYSTEM_PATH:-/opt/agentic}/.venv/bin/python3",
+      "command": "/mnt/agentic-system/.venv/bin/python3",
       "args": ["-m", "cluster_execution_mcp.server"]
     }
   }
@@ -63,9 +56,9 @@ All configuration is externalized via environment variables:
 | `CLUSTER_CMD_TIMEOUT` | `300` | Command execution timeout (seconds) |
 | `CLUSTER_STATUS_TIMEOUT` | `5` | Status check timeout (seconds) |
 | `CLUSTER_IP_CACHE_TTL` | `300` | IP resolution cache TTL (seconds) |
-| `CLUSTER_GATEWAY` | `192.0.2.102` | Gateway IP for route detection |
+| `CLUSTER_GATEWAY` | `192.168.1.1` | Gateway IP for route detection |
 | `CLUSTER_DNS` | `8.8.8.8` | DNS server for IP detection |
-| `AGENTIC_SYSTEM_PATH` | `${AGENTIC_SYSTEM_PATH:-/opt/agentic}` | Base path for databases |
+| `AGENTIC_SYSTEM_PATH` | `/mnt/agentic-system` | Base path for databases |
 
 ### Node Configuration
 
@@ -73,14 +66,14 @@ Node hostnames and IPs can be customized:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CLUSTER_MACPRO51_HOST` | `builder.example.local` | Mac Pro hostname |
-| `CLUSTER_MACPRO51_IP` | `192.0.2.237` | Mac Pro fallback IP |
-| `CLUSTER_MACSTUDIO_HOST` | `Marcs-orchestrator.example.local` | Mac Studio hostname |
-| `CLUSTER_MACSTUDIO_IP` | `192.0.2.5` | Mac Studio fallback IP |
-| `CLUSTER_MACBOOKAIR_HOST` | `Marcs-researcher.example.local` | MacBook Air hostname |
-| `CLUSTER_MACBOOKAIR_IP` | `192.0.2.65` | MacBook Air fallback IP |
-| `CLUSTER_INFERENCE_HOST` | `inference.example.local` | Inference node hostname |
-| `CLUSTER_INFERENCE_IP` | `192.0.2.130` | Inference node fallback IP |
+| `CLUSTER_MACPRO51_HOST` | `macpro51.local` | Mac Pro hostname |
+| `CLUSTER_MACPRO51_IP` | `192.168.1.183` | Mac Pro fallback IP |
+| `CLUSTER_MACSTUDIO_HOST` | `Marcs-Mac-Studio.local` | Mac Studio hostname |
+| `CLUSTER_MACSTUDIO_IP` | `192.168.1.16` | Mac Studio fallback IP |
+| `CLUSTER_MACBOOKAIR_HOST` | `Marcs-MacBook-Air.local` | MacBook Air hostname |
+| `CLUSTER_MACBOOKAIR_IP` | `192.168.1.172` | MacBook Air fallback IP |
+| `CLUSTER_INFERENCE_HOST` | `completeu-server.local` | Inference node hostname |
+| `CLUSTER_INFERENCE_IP` | `192.168.1.186` | Inference node fallback IP |
 
 ## MCP Tools
 
@@ -117,10 +110,10 @@ result = await cluster_bash("cargo build", requires_arch="x86_64")
 
 ```python
 # Run on Linux builder
-result = await offload_to("podman run -it ubuntu:22.04", node_id="builder")
+result = await offload_to("podman run -it ubuntu:22.04", node_id="macpro51")
 
 # Run on Mac Studio
-result = await offload_to("swift build", node_id="orchestrator")
+result = await offload_to("swift build", node_id="mac-studio")
 ```
 
 ### Parallel Execution
@@ -141,10 +134,10 @@ results = await parallel_execute([
 status = await cluster_status()
 # Returns:
 # {
-#   "local_node": "builder",
+#   "local_node": "macpro51",
 #   "nodes": {
-#     "builder": {"cpu_percent": 15.2, "memory_percent": 45.3, ...},
-#     "orchestrator": {"cpu_percent": 8.1, "memory_percent": 32.1, ...},
+#     "macpro51": {"cpu_percent": 15.2, "memory_percent": 45.3, ...},
+#     "mac-studio": {"cpu_percent": 8.1, "memory_percent": 32.1, ...},
 #     ...
 #   }
 # }
@@ -154,9 +147,9 @@ status = await cluster_status()
 
 | Node | OS | Arch | Capabilities | Specialties |
 |------|-----|------|--------------|-------------|
-| `builder` | Linux | x86_64 | docker, podman, raid, nvme, compilation, testing, tpu | compilation, testing, containerization, benchmarking |
-| `orchestrator` | macOS | ARM64 | orchestration, coordination, temporal, mlx-gpu, arduino | orchestration, coordination, monitoring |
-| `researcher` | macOS | ARM64 | research, documentation, analysis | research, documentation, mobile |
+| `macpro51` | Linux | x86_64 | docker, podman, raid, nvme, compilation, testing, tpu | compilation, testing, containerization, benchmarking |
+| `mac-studio` | macOS | ARM64 | orchestration, coordination, temporal, mlx-gpu, arduino | orchestration, coordination, monitoring |
+| `macbook-air` | macOS | ARM64 | research, documentation, analysis | research, documentation, mobile |
 | `inference` | macOS | ARM64 | ollama, inference, model-serving, llm-api | ollama-inference, model-serving |
 
 ## Offload Patterns
@@ -255,19 +248,19 @@ User: "Show me cluster status"
 Claude Code: cluster_status tool
 
 Output:
-  builder:
+  macpro51:
     CPU: 45.2%
     Memory: 18.3%
     Load: 3.21
     Status: healthy
 
-  orchestrator:
+  mac-studio:
     CPU: 22.1%
     Memory: 54.7%
     Load: 2.15
     Status: healthy
 
-  researcher:
+  macbook-air:
     CPU: 12.8%
     Memory: 38.2%
     Load: 1.03
@@ -288,11 +281,11 @@ python3 -c "from cluster_execution_mcp.server import main; print('OK')"
 **Node unreachable**:
 ```bash
 # Test SSH connectivity
-ssh user@example.com hostname
-ssh user@example.com hostname
+ssh marc@macpro51.local hostname
+ssh marc@Marcs-Mac-Studio.local hostname
 
 # Check with fallback IP
-ssh marc@192.0.2.237 hostname
+ssh marc@192.168.1.183 hostname
 ```
 
 **Commands timing out**:
@@ -341,15 +334,9 @@ MIT
 
 ---
 
-## Part of the MCP Ecosystem
+**Part of the AGI Agentic System**
 
-This server integrates with other MCP servers for comprehensive AGI capabilities:
-
-| Server | Purpose |
-|--------|---------|
-| [enhanced-memory-mcp](https://github.com/marc-shade/enhanced-memory-mcp) | 4-tier persistent memory with semantic search |
-| [agent-runtime-mcp](https://github.com/marc-shade/agent-runtime-mcp) | Persistent task queues and goal decomposition |
-| [node-chat-mcp](https://github.com/marc-shade/node-chat-mcp) | Inter-node AI communication |
-| [ember-mcp](https://github.com/marc-shade/ember-mcp) | Production-only policy enforcement |
-
-See [agentic-system-oss](https://github.com/marc-shade/agentic-system-oss) for the complete framework.
+See also:
+- Node Chat MCP - Inter-node communication
+- Enhanced Memory MCP - Persistent memory with RAG
+- Agent Runtime MCP - Goals and task queue

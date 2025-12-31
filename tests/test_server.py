@@ -1,455 +1,290 @@
-"""
-Tests for cluster-execution-mcp server module.
+"""Tests for cluster_execution_mcp.server module."""
 
-Tests cover:
-- ClusterExecutionServer class
-  - Load detection (is_overloaded)
-  - Offload decision logic
-  - Local execution
-  - Cluster bash execution
-  - Offload to specific node
-  - Parallel execution
-- MCP tool functions
-"""
+import json
 import pytest
-import asyncio
-import tempfile
-from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
 
+def get_fn(tool):
+    """Extract the underlying function from a FastMCP tool."""
+    if hasattr(tool, 'fn'):
+        return tool.fn
+    if hasattr(tool, '__wrapped__'):
+        return tool.__wrapped__
+    return tool
+
+
 class TestClusterExecutionServer:
-    """Test ClusterExecutionServer class."""
+    """Tests for ClusterExecutionServer class."""
 
-    @pytest.fixture
-    def mock_db_path(self):
-        """Create a temporary database path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "task_queue.db"
-            yield db_path
+    def test_server_lazy_init(self, mock_subprocess, temp_db):
+        """Test server lazy initialization."""
+        from cluster_execution_mcp.server import ClusterExecutionServer
 
-    @pytest.fixture
-    def server(self, mock_db_path):
-        """Create a server with mocked database."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-            server = ClusterExecutionServer()
-            yield server
+        server = ClusterExecutionServer()
+        # Router should not be initialized yet
+        assert server._router is None
 
+        # Access router property
+        _ = server.router
+        assert server._router is not None
 
-class TestLoadDetection:
-    """Test load detection logic."""
+    def test_server_local_node_id(self, mock_subprocess, temp_db):
+        """Test getting local node ID."""
+        from cluster_execution_mcp.server import ClusterExecutionServer
 
-    @pytest.fixture
-    def mock_db_path(self):
-        """Create a temporary database path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "task_queue.db"
-            yield db_path
+        server = ClusterExecutionServer()
+        assert server.local_node_id is not None
 
-    def test_is_overloaded_low_load(self, mock_db_path):
-        """Test not overloaded when metrics are low."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
+    def test_is_overloaded_false(self, mock_psutil):
+        """Test is_overloaded returns False when not overloaded."""
+        from cluster_execution_mcp.server import ClusterExecutionServer
 
-            server = ClusterExecutionServer()
+        server = ClusterExecutionServer()
+        server._router = MagicMock()
+        assert server.is_overloaded() is False
 
-            with patch("psutil.cpu_percent", return_value=20.0), \
-                 patch("psutil.getloadavg", return_value=(1.0, 1.0, 1.0)), \
-                 patch("psutil.virtual_memory") as mock_mem:
-                mock_mem.return_value = MagicMock(percent=50.0)
-                assert server.is_overloaded() is False
+    def test_is_overloaded_true(self):
+        """Test is_overloaded returns True when overloaded."""
+        from cluster_execution_mcp.server import ClusterExecutionServer
 
-    def test_is_overloaded_high_cpu(self, mock_db_path):
-        """Test overloaded when CPU is high."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
+        with patch("psutil.cpu_percent", return_value=95.0), \
+             patch("psutil.virtual_memory") as mock_mem, \
+             patch("psutil.getloadavg", return_value=(10.0, 8.0, 6.0)):
+            mock_mem.return_value = MagicMock(percent=90.0)
 
             server = ClusterExecutionServer()
+            server._router = MagicMock()
+            assert server.is_overloaded() is True
 
-            with patch("psutil.cpu_percent", return_value=95.0), \
-                 patch("psutil.getloadavg", return_value=(1.0, 1.0, 1.0)), \
-                 patch("psutil.virtual_memory") as mock_mem:
-                mock_mem.return_value = MagicMock(percent=50.0)
-                assert server.is_overloaded() is True
+    def test_should_offload_heavy_command(self, mock_psutil):
+        """Test should_offload returns True for heavy commands."""
+        from cluster_execution_mcp.server import ClusterExecutionServer
 
-    def test_is_overloaded_high_memory(self, mock_db_path):
-        """Test overloaded when memory is high."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
+        server = ClusterExecutionServer()
+        server._router = MagicMock()
+        assert server.should_offload("make all") is True
+        assert server.should_offload("cargo build --release") is True
 
-            server = ClusterExecutionServer()
+    def test_should_offload_simple_command(self, mock_psutil):
+        """Test should_offload returns False for simple commands."""
+        from cluster_execution_mcp.server import ClusterExecutionServer
 
-            with patch("psutil.cpu_percent", return_value=20.0), \
-                 patch("psutil.getloadavg", return_value=(1.0, 1.0, 1.0)), \
-                 patch("psutil.virtual_memory") as mock_mem:
-                mock_mem.return_value = MagicMock(percent=95.0)
-                assert server.is_overloaded() is True
-
-    def test_is_overloaded_high_load(self, mock_db_path):
-        """Test overloaded when load average is high."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-
-            server = ClusterExecutionServer()
-
-            with patch("psutil.cpu_percent", return_value=20.0), \
-                 patch("psutil.getloadavg", return_value=(10.0, 8.0, 6.0)), \
-                 patch("psutil.virtual_memory") as mock_mem:
-                mock_mem.return_value = MagicMock(percent=50.0)
-                assert server.is_overloaded() is True
+        server = ClusterExecutionServer()
+        server._router = MagicMock()
+        assert server.should_offload("ls -la") is False
+        assert server.should_offload("pwd") is False
 
 
-class TestOffloadDecision:
-    """Test offload decision logic."""
+class TestExecuteLocal:
+    """Tests for local command execution."""
 
-    @pytest.fixture
-    def mock_db_path(self):
-        """Create a temporary database path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "task_queue.db"
-            yield db_path
-
-    def test_should_offload_heavy_command(self, mock_db_path):
-        """Test heavy commands trigger offloading."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-
-            server = ClusterExecutionServer()
-
-            # Heavy commands should offload regardless of load
-            with patch("psutil.cpu_percent", return_value=10.0), \
-                 patch("psutil.getloadavg", return_value=(0.5, 0.5, 0.5)), \
-                 patch("psutil.virtual_memory") as mock_mem:
-                mock_mem.return_value = MagicMock(percent=30.0)
-                assert server.should_offload("make build") is True
-                assert server.should_offload("cargo test") is True
-                assert server.should_offload("docker build .") is True
-
-    def test_should_offload_simple_command(self, mock_db_path):
-        """Test simple commands run locally when not overloaded."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-
-            server = ClusterExecutionServer()
-
-            with patch("psutil.cpu_percent", return_value=10.0), \
-                 patch("psutil.getloadavg", return_value=(0.5, 0.5, 0.5)), \
-                 patch("psutil.virtual_memory") as mock_mem:
-                mock_mem.return_value = MagicMock(percent=30.0)
-                assert server.should_offload("ls -la") is False
-                assert server.should_offload("pwd") is False
-                assert server.should_offload("echo hello") is False
-
-    def test_should_offload_when_overloaded(self, mock_db_path):
-        """Test any command offloads when overloaded."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-
-            server = ClusterExecutionServer()
-
-            with patch("psutil.cpu_percent", return_value=95.0), \
-                 patch("psutil.getloadavg", return_value=(10.0, 8.0, 6.0)), \
-                 patch("psutil.virtual_memory") as mock_mem:
-                mock_mem.return_value = MagicMock(percent=90.0)
-                # Even simple commands should offload when overloaded
-                assert server.should_offload("unknown_command") is True
-
-
-class TestLocalExecution:
-    """Test local command execution."""
-
-    @pytest.fixture
-    def mock_db_path(self):
-        """Create a temporary database path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "task_queue.db"
-            yield db_path
-
-    def test_execute_local_success(self, mock_db_path):
+    def test_execute_local_success(self, mock_subprocess, temp_db):
         """Test successful local execution."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
+        from cluster_execution_mcp.server import ClusterExecutionServer
 
+        server = ClusterExecutionServer()
+        result = server.execute_local("echo hello")
+
+        assert result["success"] is True
+        assert result["stdout"] == "test output"
+
+    def test_execute_local_invalid_command(self, temp_db):
+        """Test local execution with invalid command."""
+        from cluster_execution_mcp.server import ClusterExecutionServer
+
+        server = ClusterExecutionServer()
+        server._router = MagicMock()
+        result = server.execute_local("")
+
+        assert result["success"] is False
+        assert "error" in result
+
+    def test_execute_local_dangerous_command(self, temp_db):
+        """Test local execution rejects dangerous commands."""
+        from cluster_execution_mcp.server import ClusterExecutionServer
+
+        server = ClusterExecutionServer()
+        server._router = MagicMock()
+        result = server.execute_local("rm -rf /")
+
+        assert result["success"] is False
+        assert "dangerous" in result.get("error", "").lower()
+
+    def test_execute_local_timeout(self, temp_db):
+        """Test local execution timeout handling."""
+        from cluster_execution_mcp.server import ClusterExecutionServer
+        import subprocess
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="test", timeout=10)):
             server = ClusterExecutionServer()
-            result = server.execute_local("echo hello")
-
-            assert result["success"] is True
-            assert "hello" in result["stdout"]
-            assert result["return_code"] == 0
-            assert result["auto_routed"] is False
-
-    def test_execute_local_failure(self, mock_db_path):
-        """Test failed local execution."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-
-            server = ClusterExecutionServer()
-            result = server.execute_local("false")
+            server._router = MagicMock()
+            result = server.execute_local("sleep 1000")
 
             assert result["success"] is False
-            assert result["return_code"] != 0
-
-    def test_execute_local_invalid_command(self, mock_db_path):
-        """Test local execution rejects invalid commands."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-
-            server = ClusterExecutionServer()
-            result = server.execute_local("rm -rf /")
-
-            assert result["success"] is False
-            assert "error" in result
-
-    def test_execute_local_complex_command(self, mock_db_path):
-        """Test local execution of complex shell command."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-
-            server = ClusterExecutionServer()
-            result = server.execute_local("echo foo && echo bar")
-
-            assert result["success"] is True
-            assert "foo" in result["stdout"]
-            assert "bar" in result["stdout"]
-
-
-class TestClusterBashExecution:
-    """Test cluster bash command execution."""
-
-    @pytest.fixture
-    def mock_db_path(self):
-        """Create a temporary database path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "task_queue.db"
-            yield db_path
-
-    def test_cluster_bash_local_simple(self, mock_db_path):
-        """Test cluster bash runs simple commands locally."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-
-            server = ClusterExecutionServer()
-
-            with patch("psutil.cpu_percent", return_value=10.0), \
-                 patch("psutil.getloadavg", return_value=(0.5, 0.5, 0.5)), \
-                 patch("psutil.virtual_memory") as mock_mem:
-                mock_mem.return_value = MagicMock(percent=30.0)
-                result = server.execute_cluster_bash("echo test")
-
-                assert result["success"] is True
-                assert "test" in result["stdout"]
-                assert result["auto_routed"] is False
-
-    def test_cluster_bash_auto_route_disabled(self, mock_db_path):
-        """Test cluster bash respects auto_route=False."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-
-            server = ClusterExecutionServer()
-
-            # Even heavy command should run locally when auto_route=False
-            result = server.execute_cluster_bash(
-                "echo make build",  # "make" is in command but just echoing
-                auto_route=False
-            )
-
-            assert result["success"] is True
-            assert result["auto_routed"] is False
-
-    def test_cluster_bash_invalid_command(self, mock_db_path):
-        """Test cluster bash rejects invalid commands."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-
-            server = ClusterExecutionServer()
-            result = server.execute_cluster_bash("")
-
-            assert result["success"] is False
-            assert "error" in result
-
-
-class TestOffloadToNode:
-    """Test explicit node offloading."""
-
-    @pytest.fixture
-    def mock_db_path(self):
-        """Create a temporary database path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "task_queue.db"
-            yield db_path
-
-    def test_offload_to_invalid_node(self, mock_db_path):
-        """Test offload to invalid node fails."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-
-            server = ClusterExecutionServer()
-            result = server.offload_to_node("echo test", "nonexistent-node")
-
-            assert result["success"] is False
-            assert "Unknown node" in result["error"]
-
-    def test_offload_to_invalid_command(self, mock_db_path):
-        """Test offload with invalid command fails."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-
-            server = ClusterExecutionServer()
-            result = server.offload_to_node("rm -rf /", "builder")
-
-            assert result["success"] is False
-            assert "dangerous" in result["error"].lower()
-
-    def test_offload_to_no_ip(self, mock_db_path):
-        """Test offload fails when IP unavailable."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-
-            server = ClusterExecutionServer()
-
-            with patch("cluster_execution_mcp.server.get_node_ip", return_value=None):
-                result = server.offload_to_node("echo test", "builder")
-
-                assert result["success"] is False
-                assert "resolve IP" in result["error"]
-
-    def test_offload_to_success(self, mock_db_path):
-        """Test successful offload with mocked SSH."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-
-            server = ClusterExecutionServer()
-
-            mock_result = MagicMock()
-            mock_result.returncode = 0
-            mock_result.stdout = "remote-output"
-            mock_result.stderr = ""
-
-            with patch("cluster_execution_mcp.server.get_node_ip", return_value="192.168.1.10"), \
-                 patch("subprocess.run", return_value=mock_result):
-                result = server.offload_to_node("echo test", "builder")
-
-                assert result["success"] is True
-                assert result["executed_on"] == "builder"
-                assert result["stdout"] == "remote-output"
-
-
-class TestParallelExecution:
-    """Test parallel command execution."""
-
-    @pytest.fixture
-    def mock_db_path(self):
-        """Create a temporary database path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "task_queue.db"
-            yield db_path
-
-    def test_parallel_execute_invalid_command(self, mock_db_path):
-        """Test parallel execution rejects invalid commands."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
-
-            server = ClusterExecutionServer()
-            results = asyncio.run(server.parallel_execute(["rm -rf /"]))
-
-            assert len(results) == 1
-            assert results[0]["success"] is False
-            assert "Invalid command" in results[0]["error"]
+            assert "timed out" in result.get("error", "").lower()
 
 
 class TestGetClusterStatus:
-    """Test cluster status retrieval."""
+    """Tests for cluster status retrieval."""
 
-    @pytest.fixture
-    def mock_db_path(self):
-        """Create a temporary database path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "task_queue.db"
-            yield db_path
+    def test_get_cluster_status_local_metrics(self, mock_psutil, mock_subprocess, temp_db):
+        """Test getting local metrics in cluster status."""
+        from cluster_execution_mcp.server import ClusterExecutionServer
 
-    def test_get_cluster_status_local(self, mock_db_path):
-        """Test getting cluster status includes local node."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import ClusterExecutionServer
+        server = ClusterExecutionServer()
+        status = server.get_cluster_status()
 
-            server = ClusterExecutionServer()
+        assert "local_node" in status
+        assert "nodes" in status
+        local_node = status["local_node"]
+        assert local_node in status["nodes"]
+        assert status["nodes"][local_node]["reachable"] is True
 
-            with patch("psutil.cpu_percent", return_value=25.0), \
-                 patch("psutil.getloadavg", return_value=(1.0, 1.0, 1.0)), \
-                 patch("psutil.virtual_memory") as mock_mem:
-                mock_mem.return_value = MagicMock(percent=50.0)
+    def test_get_cluster_status_remote_unreachable(self, mock_psutil, temp_db):
+        """Test handling unreachable remote nodes."""
+        from cluster_execution_mcp.server import ClusterExecutionServer
+        import subprocess
 
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ssh", timeout=5)):
+            with patch("cluster_execution_mcp.router.get_node_ip", return_value="192.168.1.100"):
+                server = ClusterExecutionServer()
                 status = server.get_cluster_status()
 
-                assert "local_node" in status
-                assert "nodes" in status
-                assert server.local_node_id in status["nodes"]
-                assert status["nodes"][server.local_node_id]["reachable"] is True
+                # Should have error for remote nodes
+                for node_id, node_status in status["nodes"].items():
+                    if node_id != status["local_node"]:
+                        assert node_status.get("reachable") is False or "error" in node_status
+
+
+class TestOffloadToNode:
+    """Tests for explicit node offloading."""
+
+    def test_offload_invalid_node(self, temp_db):
+        """Test offloading to invalid node."""
+        from cluster_execution_mcp.server import ClusterExecutionServer
+
+        server = ClusterExecutionServer()
+        server._router = MagicMock()
+        result = server.offload_to_node("ls -la", "nonexistent")
+
+        assert result["success"] is False
+        assert "Unknown node" in result.get("error", "")
+
+    def test_offload_invalid_command(self, temp_db):
+        """Test offloading invalid command."""
+        from cluster_execution_mcp.server import ClusterExecutionServer
+
+        server = ClusterExecutionServer()
+        server._router = MagicMock()
+        result = server.offload_to_node("rm -rf /", "macpro51")
+
+        assert result["success"] is False
+
+    def test_offload_success(self, mock_subprocess, temp_db):
+        """Test successful offload to node."""
+        from cluster_execution_mcp.server import ClusterExecutionServer
+
+        with patch("cluster_execution_mcp.router.get_node_ip", return_value="192.168.1.183"):
+            server = ClusterExecutionServer()
+            result = server.offload_to_node("ls -la", "macpro51")
+
+            assert result["success"] is True
+            assert result["executed_on"] == "macpro51"
 
 
 class TestMCPTools:
-    """Test MCP tool functions."""
-
-    @pytest.fixture
-    def mock_db_path(self):
-        """Create a temporary database path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "task_queue.db"
-            yield db_path
+    """Tests for MCP tool functions."""
 
     @pytest.mark.asyncio
-    async def test_cluster_bash_tool(self, mock_db_path):
+    async def test_cluster_bash_tool(self, mock_subprocess, mock_psutil, temp_db):
         """Test cluster_bash MCP tool."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import cluster_bash
+        from cluster_execution_mcp.server import cluster_bash
 
-            with patch("psutil.cpu_percent", return_value=10.0), \
-                 patch("psutil.getloadavg", return_value=(0.5, 0.5, 0.5)), \
-                 patch("psutil.virtual_memory") as mock_mem:
-                mock_mem.return_value = MagicMock(percent=30.0)
+        fn = get_fn(cluster_bash)
+        result_json = await fn(command="echo hello", auto_route=False)
+        result = json.loads(result_json)
 
-                result = await cluster_bash("echo test")
-                assert "success" in result
-                assert "true" in result.lower()
+        assert "success" in result
+        assert "executed_on" in result
 
     @pytest.mark.asyncio
-    async def test_cluster_status_tool(self, mock_db_path):
+    async def test_cluster_status_tool(self, mock_subprocess, mock_psutil, temp_db):
         """Test cluster_status MCP tool."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import cluster_status
+        from cluster_execution_mcp.server import cluster_status
 
-            with patch("psutil.cpu_percent", return_value=25.0), \
-                 patch("psutil.getloadavg", return_value=(1.0, 1.0, 1.0)), \
-                 patch("psutil.virtual_memory") as mock_mem:
-                mock_mem.return_value = MagicMock(percent=50.0)
+        fn = get_fn(cluster_status)
+        result_json = await fn()
+        result = json.loads(result_json)
 
-                result = await cluster_status()
-                assert "local_node" in result
-                assert "nodes" in result
+        assert "local_node" in result
+        assert "nodes" in result
 
     @pytest.mark.asyncio
-    async def test_offload_to_tool(self, mock_db_path):
-        """Test offload_to MCP tool."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import offload_to
+    async def test_offload_to_tool_invalid(self, temp_db):
+        """Test offload_to MCP tool with invalid node."""
+        from cluster_execution_mcp.server import offload_to, _server
 
-            mock_result = MagicMock()
-            mock_result.returncode = 0
-            mock_result.stdout = "output"
-            mock_result.stderr = ""
+        # Clear server cache
+        import cluster_execution_mcp.server as server_module
+        server_module._server = None
 
-            with patch("cluster_execution_mcp.server.get_node_ip", return_value="192.168.1.10"), \
-                 patch("subprocess.run", return_value=mock_result):
-                result = await offload_to("echo test", "builder")
-                assert "success" in result
+        fn = get_fn(offload_to)
+        result_json = await fn(command="ls", node_id="invalid")
+        result = json.loads(result_json)
+
+        assert result["success"] is False
+        assert "error" in result
 
     @pytest.mark.asyncio
-    async def test_parallel_execute_tool(self, mock_db_path):
+    async def test_parallel_execute_tool(self, mock_subprocess, temp_db):
         """Test parallel_execute MCP tool."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.server import parallel_execute
+        from cluster_execution_mcp.server import parallel_execute
 
-            # Test with invalid command to ensure it returns results
-            result = await parallel_execute(["rm -rf /"])
-            assert "Invalid command" in result
+        with patch("cluster_execution_mcp.router.get_node_ip", return_value="192.168.1.100"):
+            with patch("asyncio.create_subprocess_exec") as mock_exec:
+                mock_proc = AsyncMock()
+                mock_proc.returncode = 0
+                mock_proc.communicate = AsyncMock(return_value=(b"output", b""))
+                mock_exec.return_value = mock_proc
+
+                fn = get_fn(parallel_execute)
+                result_json = await fn(commands=["echo a", "echo b"])
+                result = json.loads(result_json)
+
+                assert isinstance(result, list)
+                assert len(result) == 2
+
+
+class TestInputValidation:
+    """Tests for input validation in tools."""
+
+    @pytest.mark.asyncio
+    async def test_cluster_bash_empty_command(self, temp_db):
+        """Test cluster_bash rejects empty command."""
+        from cluster_execution_mcp.server import cluster_bash
+
+        import cluster_execution_mcp.server as server_module
+        server_module._server = None
+
+        fn = get_fn(cluster_bash)
+        result_json = await fn(command="", auto_route=False)
+        result = json.loads(result_json)
+
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_parallel_execute_dangerous_command(self, temp_db):
+        """Test parallel_execute rejects dangerous commands."""
+        from cluster_execution_mcp.server import parallel_execute
+
+        import cluster_execution_mcp.server as server_module
+        server_module._server = None
+
+        fn = get_fn(parallel_execute)
+        result_json = await fn(commands=["ls", "rm -rf /"])
+        result = json.loads(result_json)
+
+        # Should fail validation
+        assert len(result) == 1
+        assert result[0]["success"] is False

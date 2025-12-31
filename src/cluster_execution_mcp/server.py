@@ -131,13 +131,17 @@ class ClusterExecutionServer:
                 continue
 
             try:
-                # SECURITY: Using list arguments, not shell=True
+                # SECURITY: Using list arguments with proper shell quoting
+                # The remote command must be a single argument to SSH with proper escaping
+                # so the remote shell doesn't interpret semicolons as command separators
                 metrics_script = (
                     "import psutil, os; "
                     "print(psutil.cpu_percent()); "
                     "print(psutil.virtual_memory().percent); "
                     "print(os.getloadavg()[0])"
                 )
+                # Quote the script for safe shell transport
+                remote_cmd = f"python3 -c {shlex.quote(metrics_script)}"
 
                 result = subprocess.run(
                     [
@@ -146,7 +150,7 @@ class ClusterExecutionServer:
                         "-o", "StrictHostKeyChecking=accept-new",
                         "-o", "BatchMode=yes",
                         f"{config.ssh_user}@{node_ip}",
-                        "python3", "-c", metrics_script
+                        remote_cmd
                     ],
                     capture_output=True,
                     text=True,
@@ -154,29 +158,39 @@ class ClusterExecutionServer:
                 )
 
                 if result.returncode == 0:
+                    # Get last line to skip shell startup messages (e.g., "Cluster environment loaded...")
                     lines = result.stdout.strip().split('\n')
-                    if len(lines) >= 3:
-                        cpu = float(lines[0])
-                        memory = float(lines[1])
-                        load = float(lines[2])
+                    last_line = lines[-1] if lines else ""
+                    parts = last_line.split()
 
-                        is_overloaded = (
-                            cpu > config.cpu_threshold or
-                            memory > config.memory_threshold or
-                            load > config.load_threshold
-                        )
+                    if len(parts) >= 3:
+                        try:
+                            cpu = float(parts[0])
+                            memory = float(parts[1])
+                            load = float(parts[2])
 
-                        status["nodes"][node_id] = {
-                            "cpu_percent": round(cpu, 1),
-                            "memory_percent": round(memory, 1),
-                            "load_1m": round(load, 2),
-                            "status": "overloaded" if is_overloaded else "healthy",
-                            "reachable": True
-                        }
+                            is_overloaded = (
+                                cpu > config.cpu_threshold or
+                                memory > config.memory_threshold or
+                                load > config.load_threshold
+                            )
+
+                            status["nodes"][node_id] = {
+                                "cpu_percent": round(cpu, 1),
+                                "memory_percent": round(memory, 1),
+                                "load_1m": round(load, 2),
+                                "status": "overloaded" if is_overloaded else "healthy",
+                                "reachable": True
+                            }
+                        except ValueError as e:
+                            status["nodes"][node_id] = {
+                                "reachable": True,
+                                "error": f"Parse error: {e}, output: {last_line[:100]}"
+                            }
                     else:
                         status["nodes"][node_id] = {
                             "reachable": True,
-                            "error": "Unexpected output format"
+                            "error": f"Unexpected output format: {last_line[:100]}"
                         }
                 else:
                     status["nodes"][node_id] = {
@@ -525,15 +539,15 @@ async def offload_to(command: str, node_id: str) -> str:
     Explicitly route command to specific cluster node.
 
     Use when you need to:
-    - Run Linux-specific commands -> offload to builder
+    - Run Linux-specific commands -> offload to macpro51
     - Test on specific architecture
     - Balance load manually
     - Debug node-specific issues
 
     Available nodes:
-    - builder: Linux x86_64 builder (docker, podman, compilation)
-    - orchestrator: macOS ARM64 orchestrator
-    - researcher: macOS ARM64 researcher
+    - macpro51: Linux x86_64 builder (docker, podman, compilation)
+    - mac-studio: macOS ARM64 orchestrator
+    - macbook-air: macOS ARM64 researcher
 
     Parameters:
     - command (required): Bash command to execute

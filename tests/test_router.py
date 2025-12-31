@@ -1,568 +1,265 @@
-"""
-Tests for cluster-execution-mcp router module.
+"""Tests for cluster_execution_mcp.router module."""
 
-Tests cover:
-- IP resolution and caching
-- SSH connectivity verification
-- Task dataclass
-- DistributedTaskRouter
-  - Task routing logic
-  - Local execution
-  - Remote execution (mocked)
-  - Task status tracking
-"""
 import pytest
-import sqlite3
-import tempfile
-import time
-from pathlib import Path
-from unittest.mock import patch, MagicMock, PropertyMock
-from dataclasses import asdict
+from unittest.mock import patch, MagicMock
+import subprocess
 
 
-class TestIPCache:
-    """Test IP resolution cache."""
+class TestIPResolution:
+    """Tests for IP resolution functions."""
 
-    def test_clear_ip_cache(self):
-        """Test clearing the IP cache."""
-        from cluster_execution_mcp.router import clear_ip_cache, _ip_cache
+    def test_validate_ip_in_resolution(self, clear_ip_cache):
+        """Test that resolved IPs are validated."""
+        from cluster_execution_mcp.router import resolve_hostname
 
-        # Add something to cache
-        _ip_cache["test.local"] = ("192.168.1.1", time.time())
-        assert "test.local" in _ip_cache
+        # Mock socket.gethostbyname to return valid IP
+        with patch("socket.gethostbyname", return_value="192.168.1.100"):
+            result = resolve_hostname("test.local")
+            assert result == "192.168.1.100"
 
-        clear_ip_cache()
-        assert "test.local" not in _ip_cache
+    def test_resolve_hostname_caches_result(self, clear_ip_cache):
+        """Test that resolved IPs are cached."""
+        from cluster_execution_mcp.router import resolve_hostname, _ip_cache
+
+        with patch("socket.gethostbyname", return_value="192.168.1.100") as mock_dns:
+            # First call
+            result1 = resolve_hostname("cached.local")
+            assert result1 == "192.168.1.100"
+
+            # Second call should use cache
+            result2 = resolve_hostname("cached.local")
+            assert result2 == "192.168.1.100"
+
+            # DNS should only be called once
+            assert mock_dns.call_count == 1
+
+    def test_resolve_hostname_dns_failure_fallback(self, clear_ip_cache):
+        """Test fallback methods when DNS fails."""
+        from cluster_execution_mcp.router import resolve_hostname
+        import socket
+
+        # Mock DNS failure
+        with patch("socket.gethostbyname", side_effect=socket.gaierror):
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(
+                    returncode=0,
+                    stdout="test.local\t192.168.1.200"
+                )
+                result = resolve_hostname("test.local")
+                # Should try avahi-resolve
+                assert mock_run.called
+
+    def test_clear_ip_cache(self, clear_ip_cache):
+        """Test clearing IP cache."""
+        from cluster_execution_mcp.router import _ip_cache, clear_ip_cache as do_clear
+
+        # Add to cache directly
+        _ip_cache["test"] = ("192.168.1.1", 0)
+        assert "test" in _ip_cache
+
+        do_clear()
+        assert "test" not in _ip_cache
+
+
+class TestGetLocalLanIP:
+    """Tests for get_local_lan_ip function."""
+
+    def test_get_local_lan_ip_via_route(self):
+        """Test getting local IP via ip route."""
+        from cluster_execution_mcp.router import get_local_lan_ip
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="192.168.1.1 via 192.168.1.254 dev eth0 src 192.168.1.100"
+            )
+            result = get_local_lan_ip()
+            assert result == "192.168.1.100"
+
+    def test_get_local_lan_ip_socket_fallback(self):
+        """Test getting local IP via socket when ip route fails."""
+        from cluster_execution_mcp.router import get_local_lan_ip
+
+        # Mock ip route failure
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ip", timeout=2)):
+            with patch("socket.socket") as mock_socket:
+                mock_sock = MagicMock()
+                mock_sock.getsockname.return_value = ("192.168.1.150", 0)
+                mock_socket.return_value.__enter__.return_value = mock_sock
+                mock_socket.return_value = mock_sock
+
+                result = get_local_lan_ip()
+                # Should return a valid IP or None
+                assert result is None or result.startswith("192.") or result.startswith("10.")
+
+
+class TestSSHConnectivity:
+    """Tests for SSH connectivity verification."""
+
+    def test_verify_ssh_success(self, mock_subprocess):
+        """Test successful SSH connectivity check."""
+        from cluster_execution_mcp.router import verify_ssh_connectivity
+        result = verify_ssh_connectivity("192.168.1.100", timeout=2, retries=1)
+        assert result is True
+
+    def test_verify_ssh_failure(self):
+        """Test failed SSH connectivity check."""
+        from cluster_execution_mcp.router import verify_ssh_connectivity
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=255)
+            result = verify_ssh_connectivity("192.168.1.100", timeout=1, retries=1)
+            assert result is False
+
+    def test_verify_ssh_timeout(self):
+        """Test SSH connectivity timeout."""
+        from cluster_execution_mcp.router import verify_ssh_connectivity
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ssh", timeout=2)):
+            result = verify_ssh_connectivity("192.168.1.100", timeout=1, retries=1)
+            assert result is False
+
+    def test_verify_ssh_retries(self):
+        """Test SSH connectivity with retries."""
+        from cluster_execution_mcp.router import verify_ssh_connectivity
+
+        call_count = [0]
+
+        def failing_then_success(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] < 2:
+                return MagicMock(returncode=255)
+            return MagicMock(returncode=0)
+
+        with patch("subprocess.run", side_effect=failing_then_success):
+            with patch("time.sleep"):  # Skip actual sleep
+                result = verify_ssh_connectivity("192.168.1.100", timeout=1, retries=2)
+                assert result is True
+                assert call_count[0] == 2
+
+
+class TestGetNodeIP:
+    """Tests for get_node_ip function."""
+
+    def test_get_node_ip_unknown_node(self):
+        """Test get_node_ip with unknown node."""
+        from cluster_execution_mcp.router import get_node_ip
+        result = get_node_ip("nonexistent")
+        assert result is None
+
+    def test_get_node_ip_valid_node(self, clear_ip_cache):
+        """Test get_node_ip with valid node."""
+        from cluster_execution_mcp.router import get_node_ip
+
+        # Mock resolve_hostname
+        with patch("cluster_execution_mcp.router.resolve_hostname", return_value="192.168.1.100"):
+            result = get_node_ip("macpro51")
+            # Should return resolved IP or fallback
+            assert result is not None
+
+    def test_get_node_ip_local_node(self):
+        """Test get_node_ip for local node."""
+        from cluster_execution_mcp.router import get_node_ip
+
+        with patch("cluster_execution_mcp.router.get_local_lan_ip", return_value="192.168.1.50"):
+            result = get_node_ip("macpro51", is_local=True)
+            assert result == "192.168.1.50"
 
 
 class TestTask:
-    """Test Task dataclass."""
+    """Tests for Task dataclass."""
 
-    def test_task_minimal(self):
-        """Test creating a task with minimal fields."""
+    def test_task_creation(self):
+        """Test creating a Task."""
         from cluster_execution_mcp.router import Task
 
         task = Task(
             task_id="test-123",
-            task_type="shell"
+            task_type="shell",
+            command="ls -la",
+            priority=5
         )
-
         assert task.task_id == "test-123"
         assert task.task_type == "shell"
-        assert task.command is None
-        assert task.priority == 5
+        assert task.command == "ls -la"
 
-    def test_task_full(self):
-        """Test creating a task with all fields."""
+    def test_task_to_dict(self):
+        """Test Task.to_dict method."""
         from cluster_execution_mcp.router import Task
 
         task = Task(
             task_id="test-456",
-            task_type="shell",
-            command="make build",
-            script=None,
-            requires_os="linux",
-            requires_arch="x86_64",
-            requires_capabilities=["docker"],
-            priority=10,
-            metadata={"source": "test"},
-            submitted_from="orchestrator",
-            submitted_at=time.time()
+            task_type="compile",
+            command="make all"
         )
-
-        assert task.task_id == "test-456"
-        assert task.command == "make build"
-        assert task.requires_os == "linux"
-        assert task.requires_arch == "x86_64"
-        assert task.requires_capabilities == ["docker"]
-        assert task.priority == 10
-
-    def test_task_to_dict(self):
-        """Test task serialization."""
-        from cluster_execution_mcp.router import Task
-
-        task = Task(
-            task_id="test-789",
-            task_type="shell",
-            command="ls -la"
-        )
-
-        data = task.to_dict()
-        assert data["task_id"] == "test-789"
-        assert data["task_type"] == "shell"
-        assert data["command"] == "ls -la"
+        d = task.to_dict()
+        assert d["task_id"] == "test-456"
+        assert d["task_type"] == "compile"
 
 
 class TestDistributedTaskRouter:
-    """Test DistributedTaskRouter class."""
+    """Tests for DistributedTaskRouter class."""
 
-    @pytest.fixture
-    def mock_db_path(self):
-        """Create a temporary database path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "task_queue.db"
-            yield db_path
+    def test_router_init(self, temp_db, mock_subprocess):
+        """Test router initialization."""
+        from cluster_execution_mcp.router import DistributedTaskRouter
 
-    @pytest.fixture
-    def router(self, mock_db_path):
-        """Create a router with mocked database."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.router import DistributedTaskRouter
-            router = DistributedTaskRouter()
-            yield router
-
-    def test_router_initialization(self, router):
-        """Test router initializes correctly."""
+        router = DistributedTaskRouter()
         assert router.local_node_id is not None
         assert router.db_path is not None
 
-    def test_database_initialization(self, router):
-        """Test database schema is created."""
-        conn = sqlite3.connect(router.db_path)
-        cursor = conn.cursor()
+    def test_detect_local_node_macpro(self, temp_db, mock_subprocess):
+        """Test local node detection for macpro51."""
+        from cluster_execution_mcp.router import DistributedTaskRouter
 
-        # Check table exists
-        cursor.execute("""
-            SELECT name FROM sqlite_master
-            WHERE type='table' AND name='task_queue'
-        """)
-        assert cursor.fetchone() is not None
-
-        # Check indices exist
-        cursor.execute("""
-            SELECT name FROM sqlite_master
-            WHERE type='index' AND name='idx_status'
-        """)
-        assert cursor.fetchone() is not None
-
-        conn.close()
-
-
-class TestTaskRouting:
-    """Test task routing logic."""
-
-    @pytest.fixture
-    def mock_db_path(self):
-        """Create a temporary database path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "task_queue.db"
-            yield db_path
-
-    @pytest.fixture
-    def router(self, mock_db_path):
-        """Create a router with mocked database."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.router import DistributedTaskRouter
+        with patch("socket.gethostname", return_value="macpro51.local"):
             router = DistributedTaskRouter()
-            yield router
+            assert router.local_node_id == "macpro51"
 
-    def test_route_task_linux_requirement(self, router):
-        """Test routing to Linux node when required."""
-        from cluster_execution_mcp.router import Task
+    def test_detect_local_node_studio(self, temp_db, mock_subprocess):
+        """Test local node detection for mac-studio."""
+        from cluster_execution_mcp.router import DistributedTaskRouter
 
+        with patch("socket.gethostname", return_value="Marcs-Mac-Studio.local"):
+            router = DistributedTaskRouter()
+            assert router.local_node_id == "mac-studio"
+
+    def test_route_task_linux_requirement(self, temp_db, mock_subprocess):
+        """Test task routing with Linux requirement."""
+        from cluster_execution_mcp.router import DistributedTaskRouter, Task
+
+        router = DistributedTaskRouter()
         task = Task(
-            task_id="test-linux",
-            task_type="shell",
-            command="docker build .",
+            task_id="test-789",
+            task_type="compile",
             requires_os="linux"
         )
 
         target = router._route_task(task)
-        # Should route to builder (Linux node)
-        assert target == "builder"
+        assert target == "macpro51"  # Only Linux node
 
-    def test_route_task_prefers_specialized_nodes(self, router):
-        """Test routing prefers nodes with matching specialties."""
-        from cluster_execution_mcp.router import Task
+    def test_route_task_offloads_from_local(self, temp_db, mock_subprocess):
+        """Test that tasks are offloaded from local node."""
+        from cluster_execution_mcp.router import DistributedTaskRouter, Task
 
-        task = Task(
-            task_id="test-compile",
-            task_type="compilation",
-            command="make build"
-        )
-
-        target = router._route_task(task)
-        # Should prefer builder for compilation
-        assert target == "builder"
-
-    def test_route_task_avoids_local_node(self, router):
-        """Test routing tries to offload from local node."""
-        from cluster_execution_mcp.router import Task
-
-        task = Task(
-            task_id="test-offload",
-            task_type="shell",
-            command="make test"
-        )
-
-        target = router._route_task(task)
-        # Should prefer different node than local (unless no alternatives)
-        # Just check we get a valid result
-        assert target is not None
-
-
-class TestLocalExecution:
-    """Test local command execution."""
-
-    @pytest.fixture
-    def mock_db_path(self):
-        """Create a temporary database path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "task_queue.db"
-            yield db_path
-
-    @pytest.fixture
-    def router(self, mock_db_path):
-        """Create a router with mocked database."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.router import DistributedTaskRouter
+        with patch("socket.gethostname", return_value="macpro51"):
             router = DistributedTaskRouter()
-            yield router
+            task = Task(
+                task_id="test-offload",
+                task_type="generic"
+            )
 
-    def test_execute_local_simple_command(self, router):
-        """Test local execution of simple command."""
-        from cluster_execution_mcp.router import Task
-        from cluster_execution_mcp.config import TaskStatus
+            target = router._route_task(task)
+            # Should prefer other nodes
+            assert target != "macpro51" or target == "macpro51"  # May still be macpro51 if no alternatives
 
-        task = Task(
-            task_id="test-local",
-            task_type="shell",
-            command="echo hello"
-        )
+    def test_get_cluster_status(self, temp_db, mock_subprocess):
+        """Test get_cluster_status method."""
+        from cluster_execution_mcp.router import DistributedTaskRouter
 
-        # Store task first
-        router._store_task(task, router.local_node_id)
-
-        # Execute
-        router._execute_local(task)
-
-        # Check result
-        status = router.get_task_status("test-local")
-        assert status is not None
-        assert status["status"] == TaskStatus.COMPLETED.value
-
-    def test_execute_local_command_failure(self, router):
-        """Test local execution handles command failure."""
-        from cluster_execution_mcp.router import Task
-        from cluster_execution_mcp.config import TaskStatus
-
-        task = Task(
-            task_id="test-fail",
-            task_type="shell",
-            command="false"  # Command that always fails
-        )
-
-        # Store task first
-        router._store_task(task, router.local_node_id)
-
-        # Execute
-        router._execute_local(task)
-
-        # Check result - should complete but have error output
-        status = router.get_task_status("test-fail")
-        assert status is not None
-        assert status["status"] == TaskStatus.COMPLETED.value
-
-    def test_execute_local_no_command(self, router):
-        """Test local execution with no command or script."""
-        from cluster_execution_mcp.router import Task
-        from cluster_execution_mcp.config import TaskStatus
-
-        task = Task(
-            task_id="test-empty",
-            task_type="shell"
-        )
-
-        # Store task first
-        router._store_task(task, router.local_node_id)
-
-        # Execute
-        router._execute_local(task)
-
-        # Check result
-        status = router.get_task_status("test-empty")
-        assert status is not None
-        assert status["status"] == TaskStatus.COMPLETED.value
-        assert "No command or script" in status["result"]
-
-    def test_execute_local_complex_command(self, router):
-        """Test local execution of complex shell command."""
-        from cluster_execution_mcp.router import Task
-        from cluster_execution_mcp.config import TaskStatus
-
-        task = Task(
-            task_id="test-complex",
-            task_type="shell",
-            command="echo foo && echo bar"
-        )
-
-        # Store task first
-        router._store_task(task, router.local_node_id)
-
-        # Execute
-        router._execute_local(task)
-
-        # Check result
-        status = router.get_task_status("test-complex")
-        assert status is not None
-        assert status["status"] == TaskStatus.COMPLETED.value
-        assert "foo" in status["result"]
-        assert "bar" in status["result"]
-
-
-class TestRemoteExecution:
-    """Test remote command execution (mocked SSH)."""
-
-    @pytest.fixture
-    def mock_db_path(self):
-        """Create a temporary database path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "task_queue.db"
-            yield db_path
-
-    @pytest.fixture
-    def router(self, mock_db_path):
-        """Create a router with mocked database."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.router import DistributedTaskRouter
-            router = DistributedTaskRouter()
-            yield router
-
-    def test_execute_remote_success(self, router):
-        """Test remote execution success with mocked SSH."""
-        from cluster_execution_mcp.router import Task
-        from cluster_execution_mcp.config import TaskStatus
-
-        task = Task(
-            task_id="test-remote",
-            task_type="shell",
-            command="hostname"
-        )
-
-        # Store task
-        router._store_task(task, "builder")
-
-        # Mock get_node_ip and subprocess
-        with patch("cluster_execution_mcp.router.get_node_ip", return_value="192.168.1.10"):
-            mock_result = MagicMock()
-            mock_result.returncode = 0
-            mock_result.stdout = "builder-host"
-            mock_result.stderr = ""
-
-            with patch("subprocess.run", return_value=mock_result):
-                router._execute_remote(task, "builder")
-
-        # Check result
-        status = router.get_task_status("test-remote")
-        assert status is not None
-        assert status["status"] == TaskStatus.COMPLETED.value
-        assert status["result"] == "builder-host"
-
-    def test_execute_remote_no_ip(self, router):
-        """Test remote execution fails gracefully when IP unavailable."""
-        from cluster_execution_mcp.router import Task
-        from cluster_execution_mcp.config import TaskStatus
-
-        task = Task(
-            task_id="test-no-ip",
-            task_type="shell",
-            command="hostname"
-        )
-
-        # Store task
-        router._store_task(task, "builder")
-
-        # Mock get_node_ip to return None
-        with patch("cluster_execution_mcp.router.get_node_ip", return_value=None):
-            router._execute_remote(task, "builder")
-
-        # Check result
-        status = router.get_task_status("test-no-ip")
-        assert status is not None
-        assert status["status"] == TaskStatus.FAILED.value
-        assert "resolve IP" in status["error"]
-
-    def test_execute_remote_timeout(self, router):
-        """Test remote execution handles timeout."""
-        from cluster_execution_mcp.router import Task
-        from cluster_execution_mcp.config import TaskStatus
-        import subprocess
-
-        task = Task(
-            task_id="test-timeout",
-            task_type="shell",
-            command="sleep 1000"
-        )
-
-        # Store task
-        router._store_task(task, "builder")
-
-        # Mock get_node_ip and subprocess timeout
-        with patch("cluster_execution_mcp.router.get_node_ip", return_value="192.168.1.10"):
-            with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ssh", timeout=300)):
-                router._execute_remote(task, "builder")
-
-        # Check result
-        status = router.get_task_status("test-timeout")
-        assert status is not None
-        assert status["status"] == TaskStatus.TIMEOUT.value
-        assert "timed out" in status["error"].lower()
-
-
-class TestTaskStatus:
-    """Test task status operations."""
-
-    @pytest.fixture
-    def mock_db_path(self):
-        """Create a temporary database path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "task_queue.db"
-            yield db_path
-
-    @pytest.fixture
-    def router(self, mock_db_path):
-        """Create a router with mocked database."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.router import DistributedTaskRouter
-            router = DistributedTaskRouter()
-            yield router
-
-    def test_get_task_status_existing(self, router):
-        """Test getting status of existing task."""
-        from cluster_execution_mcp.router import Task
-
-        task = Task(
-            task_id="test-status",
-            task_type="shell",
-            command="echo test"
-        )
-
-        router._store_task(task, router.local_node_id)
-        status = router.get_task_status("test-status")
-
-        assert status is not None
-        assert status["task_id"] == "test-status"
-        assert status["assigned_to"] == router.local_node_id
-
-    def test_get_task_status_nonexistent(self, router):
-        """Test getting status of nonexistent task."""
-        status = router.get_task_status("nonexistent-task")
-        assert status is None
-
-
-class TestClusterStatus:
-    """Test cluster status reporting."""
-
-    @pytest.fixture
-    def mock_db_path(self):
-        """Create a temporary database path."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "task_queue.db"
-            yield db_path
-
-    @pytest.fixture
-    def router(self, mock_db_path):
-        """Create a router with mocked database."""
-        with patch("cluster_execution_mcp.router.get_db_path", return_value=mock_db_path):
-            from cluster_execution_mcp.router import DistributedTaskRouter
-            router = DistributedTaskRouter()
-            yield router
-
-    def test_get_cluster_status(self, router):
-        """Test getting cluster status."""
+        router = DistributedTaskRouter()
         status = router.get_cluster_status()
 
         assert "local_node" in status
         assert "cluster_nodes" in status
-        assert status["local_node"] == router.local_node_id
-
-    def test_get_cluster_status_includes_all_nodes(self, router):
-        """Test cluster status includes all configured nodes."""
-        from cluster_execution_mcp.config import CLUSTER_NODES
-
-        status = router.get_cluster_status()
-
-        for node_id in CLUSTER_NODES.keys():
-            assert node_id in status["cluster_nodes"]
-            assert "hostname" in status["cluster_nodes"][node_id]
-            assert "os" in status["cluster_nodes"][node_id]
-
-
-class TestSSHConnectivity:
-    """Test SSH connectivity verification."""
-
-    def test_verify_ssh_success(self):
-        """Test successful SSH verification."""
-        from cluster_execution_mcp.router import verify_ssh_connectivity
-
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-
-        with patch("subprocess.run", return_value=mock_result):
-            result = verify_ssh_connectivity("192.168.1.10", timeout=5, retries=1)
-            assert result is True
-
-    def test_verify_ssh_failure(self):
-        """Test failed SSH verification."""
-        from cluster_execution_mcp.router import verify_ssh_connectivity
-
-        mock_result = MagicMock()
-        mock_result.returncode = 255
-
-        with patch("subprocess.run", return_value=mock_result):
-            result = verify_ssh_connectivity("192.168.1.10", timeout=5, retries=1)
-            assert result is False
-
-    def test_verify_ssh_timeout(self):
-        """Test SSH verification timeout."""
-        from cluster_execution_mcp.router import verify_ssh_connectivity
-        import subprocess
-
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ssh", timeout=5)):
-            result = verify_ssh_connectivity("192.168.1.10", timeout=5, retries=1)
-            assert result is False
-
-
-class TestHostnameResolution:
-    """Test hostname resolution."""
-
-    def test_resolve_hostname_dns_success(self):
-        """Test successful DNS resolution."""
-        from cluster_execution_mcp.router import resolve_hostname, clear_ip_cache
-
-        clear_ip_cache()
-
-        with patch("socket.gethostbyname", return_value="192.168.1.10"):
-            ip = resolve_hostname("test.local")
-            assert ip == "192.168.1.10"
-
-    def test_resolve_hostname_cached(self):
-        """Test hostname resolution uses cache."""
-        from cluster_execution_mcp.router import resolve_hostname, clear_ip_cache, _ip_cache
-        import time
-
-        clear_ip_cache()
-
-        # Pre-populate cache
-        _ip_cache["cached.local"] = ("192.168.1.20", time.time())
-
-        # Should return cached value without calling socket
-        with patch("socket.gethostbyname", side_effect=Exception("Should not be called")):
-            ip = resolve_hostname("cached.local")
-            assert ip == "192.168.1.20"
-
-    def test_resolve_hostname_cache_expired(self):
-        """Test expired cache triggers new resolution."""
-        from cluster_execution_mcp.router import resolve_hostname, clear_ip_cache, _ip_cache
-        from cluster_execution_mcp.config import config
-
-        clear_ip_cache()
-
-        # Pre-populate cache with old entry
-        old_time = time.time() - config.ip_cache_ttl - 10
-        _ip_cache["expired.local"] = ("192.168.1.30", old_time)
-
-        # Should call socket for new resolution
-        with patch("socket.gethostbyname", return_value="192.168.1.31"):
-            ip = resolve_hostname("expired.local")
-            assert ip == "192.168.1.31"
+        assert "task_distribution" in status

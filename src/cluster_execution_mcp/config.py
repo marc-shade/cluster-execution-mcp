@@ -3,7 +3,14 @@
 Configuration module for Cluster Execution MCP Server.
 
 Centralizes all configuration, environment variables, and cluster topology.
+
+Cluster Topology (Marc's Agentic System):
+- macpro51 (builder): Linux x86_64 - compilation, testing, containers
+- mac-studio (orchestrator): macOS ARM64 - coordination, temporal workflows
+- macbook-air (researcher): macOS ARM64 - research, documentation
 """
+import platform
+import socket
 
 import logging
 import os
@@ -11,6 +18,45 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+
+
+def _get_storage_base() -> Path:
+    """Detect storage base path based on platform."""
+    # Check environment variable first
+    env_path = os.environ.get("AGENTIC_SYSTEM_PATH")
+    if env_path and Path(env_path).exists():
+        return Path(env_path)
+
+    system = platform.system()
+
+    # macOS paths
+    if system == "Darwin":
+        macos_paths = [
+            Path("/Volumes/SSDRAID0/agentic-system"),
+            Path("/Volumes/FILES/agentic-system"),
+            Path.home() / "agentic-system",
+        ]
+        for path in macos_paths:
+            if path.exists():
+                return path
+
+    # Linux paths
+    elif system == "Linux":
+        linux_paths = [
+            Path("/mnt/agentic-system"),
+            Path("/home/marc/agentic-system"),
+            Path.home() / "agentic-system",
+        ]
+        for path in linux_paths:
+            if path.exists():
+                return path
+
+    # Fallback to package directory
+    return Path(__file__).parent.parent
+
+
+_STORAGE_BASE = _get_storage_base()
+
 
 # =============================================================================
 # Logging Setup
@@ -55,7 +101,7 @@ class ClusterConfig:
 
     # Paths
     agentic_system_path: str = field(
-        default_factory=lambda: os.getenv("AGENTIC_SYSTEM_PATH", "${AGENTIC_SYSTEM_PATH:-/opt/agentic}")
+        default_factory=lambda: os.getenv("AGENTIC_SYSTEM_PATH", str(_STORAGE_BASE))
     )
 
 
@@ -140,64 +186,99 @@ class ClusterNode:
         return True
 
 
-# Cluster topology - configure via CLUSTER_* environment variables
-# Default IPs use RFC 5737 TEST-NET addresses for documentation purposes
+# =============================================================================
+# Cluster Topology - Marc's Agentic System
+# =============================================================================
+# Uses actual hostnames as primary IDs with real network IPs
+# Both hostname and role aliases are supported (e.g., "macpro51" or "builder")
+
 CLUSTER_NODES: Dict[str, ClusterNode] = {
-    "builder": ClusterNode(
-        node_id="builder",
-        hostname=os.getenv("CLUSTER_BUILDER_HOST", "builder.example.local"),
-        fallback_ip=os.getenv("CLUSTER_BUILDER_IP", "192.0.2.10"),
+    # Linux Builder Node - macpro51
+    "macpro51": ClusterNode(
+        node_id="macpro51",
+        hostname="macpro51.local",
+        fallback_ip=os.getenv("CLUSTER_BUILDER_IP", "192.168.1.27"),
         os="linux",
         arch="x86_64",
-        capabilities=["docker", "podman", "raid", "nvme", "compilation", "testing", "tpu"],
-        specialties=["compilation", "testing", "containerization", "benchmarking"],
+        capabilities=["docker", "podman", "raid", "nvme", "compilation", "testing", "tpu", "ollama"],
+        specialties=["compilation", "testing", "containerization", "benchmarking", "linux-builds"],
         max_tasks=10,
-        priority=3
+        priority=3  # Offload target
     ),
-    "orchestrator": ClusterNode(
-        node_id="orchestrator",
-        hostname=os.getenv("CLUSTER_ORCHESTRATOR_HOST", "orchestrator.example.local"),
-        fallback_ip=os.getenv("CLUSTER_ORCHESTRATOR_IP", "192.0.2.20"),
+    # macOS Orchestrator Node - mac-studio
+    "mac-studio": ClusterNode(
+        node_id="mac-studio",
+        hostname="mac-studio.local",
+        fallback_ip=os.getenv("CLUSTER_ORCHESTRATOR_IP", "192.168.1.16"),
         os="macos",
         arch="arm64",
-        capabilities=["orchestration", "coordination", "temporal", "mlx-gpu", "arduino"],
+        capabilities=["orchestration", "coordination", "temporal", "mlx-gpu", "arduino", "qdrant"],
         specialties=["orchestration", "coordination", "monitoring", "temporal-workflows"],
         max_tasks=5,
         priority=1  # Keep free - orchestrator
     ),
-    "researcher": ClusterNode(
-        node_id="researcher",
-        hostname=os.getenv("CLUSTER_RESEARCHER_HOST", "researcher.example.local"),
-        fallback_ip=os.getenv("CLUSTER_RESEARCHER_IP", "192.0.2.30"),
+    # macOS Researcher Node - macbook-air
+    "macbook-air": ClusterNode(
+        node_id="macbook-air",
+        hostname="macbook-air.local",
+        fallback_ip=os.getenv("CLUSTER_RESEARCHER_IP", "192.168.1.76"),
         os="macos",
         arch="arm64",
-        capabilities=["research", "documentation", "analysis"],
+        capabilities=["research", "documentation", "analysis", "mobile"],
         specialties=["research", "documentation", "analysis", "mobile-operations"],
         max_tasks=3,
         priority=2
     ),
-    "inference": ClusterNode(
-        node_id="inference",
-        hostname=os.getenv("CLUSTER_INFERENCE_HOST", "inference.example.local"),
-        fallback_ip=os.getenv("CLUSTER_INFERENCE_IP", "192.0.2.40"),
-        os="macos",
-        arch="arm64",
-        capabilities=["ollama", "inference", "model-serving", "llm-api"],
-        specialties=["ollama-inference", "model-serving", "api-endpoints"],
-        max_tasks=8,
-        priority=2
-    ),
+}
+
+# =============================================================================
+# Node Aliases - Map role names to actual hostnames
+# =============================================================================
+# Allows using either "builder" or "macpro51" interchangeably
+
+NODE_ALIASES: Dict[str, str] = {
+    # Role -> Hostname mappings
+    "builder": "macpro51",
+    "orchestrator": "mac-studio",
+    "researcher": "macbook-air",
+    # Self-referential aliases (hostname -> hostname)
+    "macpro51": "macpro51",
+    "mac-studio": "mac-studio",
+    "macbook-air": "macbook-air",
+    # Legacy/alternative names
+    "linux": "macpro51",
+    "studio": "mac-studio",
+    "air": "macbook-air",
 }
 
 
+def resolve_node_id(node_id: str) -> str:
+    """Resolve node alias to canonical node ID."""
+    return NODE_ALIASES.get(node_id.lower(), node_id)
+
+
 def get_node(node_id: str) -> Optional[ClusterNode]:
-    """Get node by ID."""
-    return CLUSTER_NODES.get(node_id)
+    """Get node by ID or alias.
+
+    Supports both actual hostnames (macpro51) and role aliases (builder).
+    """
+    # Try direct lookup first
+    if node_id in CLUSTER_NODES:
+        return CLUSTER_NODES[node_id]
+
+    # Try alias resolution
+    canonical_id = resolve_node_id(node_id)
+    return CLUSTER_NODES.get(canonical_id)
 
 
 def get_available_nodes() -> List[str]:
-    """Get list of available node IDs."""
+    """Get list of available node IDs (actual hostnames)."""
     return list(CLUSTER_NODES.keys())
+
+
+def get_all_node_aliases() -> Dict[str, str]:
+    """Get all node aliases mapping."""
+    return NODE_ALIASES.copy()
 
 
 def get_nodes_by_capability(capability: str) -> List[ClusterNode]:
@@ -271,11 +352,47 @@ class TaskStatus(Enum):
 # =============================================================================
 
 def validate_node_id(node_id: str) -> tuple[bool, Optional[str]]:
-    """Validate that node_id is known."""
+    """Validate that node_id is known (supports aliases)."""
+    # Direct match
     if node_id in CLUSTER_NODES:
         return True, None
+
+    # Try alias resolution
+    canonical_id = resolve_node_id(node_id)
+    if canonical_id in CLUSTER_NODES:
+        return True, None
+
     available = ", ".join(CLUSTER_NODES.keys())
-    return False, f"Unknown node: {node_id}. Available: {available}"
+    aliases = ", ".join(k for k in NODE_ALIASES.keys() if k not in CLUSTER_NODES)
+    return False, f"Unknown node: {node_id}. Available: {available} (aliases: {aliases})"
+
+
+def detect_local_node() -> Optional[str]:
+    """Detect which cluster node we're running on."""
+    hostname = socket.gethostname().lower()
+
+    # Direct hostname match
+    for node_id in CLUSTER_NODES:
+        if hostname.startswith(node_id.lower().replace("-", "")):
+            return node_id
+        if hostname == node_id.lower():
+            return node_id
+
+    # Check common hostname patterns
+    if "macpro51" in hostname or hostname.startswith("macpro"):
+        return "macpro51"
+    if "mac-studio" in hostname or "macstudio" in hostname:
+        return "mac-studio"
+    if "macbook-air" in hostname or "macbookair" in hostname:
+        return "macbook-air"
+
+    return None
+
+
+def get_remote_nodes() -> List[str]:
+    """Get list of remote nodes (excluding local node)."""
+    local = detect_local_node()
+    return [n for n in CLUSTER_NODES.keys() if n != local]
 
 
 def validate_command(command: str) -> tuple[bool, Optional[str]]:
@@ -356,13 +473,18 @@ __all__ = [
     "get_db_path",
     # Nodes
     "CLUSTER_NODES",
+    "NODE_ALIASES",
     "ClusterNode",
     "NodeOS",
     "NodeArch",
     "get_node",
     "get_available_nodes",
+    "get_all_node_aliases",
     "get_nodes_by_capability",
     "get_nodes_by_os",
+    "resolve_node_id",
+    "detect_local_node",
+    "get_remote_nodes",
     # Patterns
     "OFFLOAD_PATTERNS",
     "LOCAL_PATTERNS",
