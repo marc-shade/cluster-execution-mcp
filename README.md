@@ -46,7 +46,7 @@ All configuration is externalized via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CLUSTER_SSH_USER` | `marc` | SSH username for remote execution |
+| `CLUSTER_SSH_USER` | `marcssh` | SSH username for remote execution |
 | `CLUSTER_SSH_TIMEOUT` | `5` | SSH connection timeout (seconds) |
 | `CLUSTER_SSH_CONNECT_TIMEOUT` | `2` | Initial SSH connect timeout (seconds) |
 | `CLUSTER_SSH_RETRIES` | `2` | Number of SSH retry attempts |
