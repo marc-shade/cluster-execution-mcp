@@ -67,13 +67,13 @@ Node hostnames and IPs can be customized:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CLUSTER_MACPRO51_HOST` | `macpro51.local` | Mac Pro hostname |
-| `CLUSTER_MACPRO51_IP` | `192.168.1.183` | Mac Pro fallback IP |
+| `CLUSTER_MACPRO51_IP` | `192.168.1.1` | Mac Pro fallback IP |
 | `CLUSTER_MACSTUDIO_HOST` | `Marcs-Mac-Studio.local` | Mac Studio hostname |
-| `CLUSTER_MACSTUDIO_IP` | `192.168.1.16` | Mac Studio fallback IP |
+| `CLUSTER_MACSTUDIO_IP` | `192.168.1.6` | Mac Studio fallback IP |
 | `CLUSTER_MACBOOKAIR_HOST` | `Marcs-MacBook-Air.local` | MacBook Air hostname |
-| `CLUSTER_MACBOOKAIR_IP` | `192.168.1.172` | MacBook Air fallback IP |
-| `CLUSTER_INFERENCE_HOST` | `completeu-server.local` | Inference node hostname |
-| `CLUSTER_INFERENCE_IP` | `192.168.1.186` | Inference node fallback IP |
+| `CLUSTER_MACBOOKAIR_IP` | `192.168.1.7` | MacBook Air fallback IP |
+| `CLUSTER_INFERENCE_HOST` | `server.local` | Inference node hostname |
+| `CLUSTER_INFERENCE_IP` | `192.168.1.8` | Inference node fallback IP |
 
 ## MCP Tools
 
