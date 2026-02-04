@@ -67,7 +67,7 @@ Node hostnames and IPs can be customized:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CLUSTER_MACPRO51_HOST` | `macpro51.local` | Mac Pro hostname |
-| `CLUSTER_MACPRO51_IP` | `192.168.1.1` | Mac Pro fallback IP |
+| `CLUSTER_MACPRO51_IP` | `192.168.1.2` | Mac Pro fallback IP |
 | `CLUSTER_MACSTUDIO_HOST` | `Marcs-Mac-Studio.local` | Mac Studio hostname |
 | `CLUSTER_MACSTUDIO_IP` | `192.168.1.6` | Mac Studio fallback IP |
 | `CLUSTER_MACBOOKAIR_HOST` | `Marcs-MacBook-Air.local` | MacBook Air hostname |
